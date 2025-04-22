@@ -1,0 +1,6 @@
+[server]
+headless = true  # Nécessaire pour le déploiement en ligne
+port = 8501      # Port par défaut de Streamlit
+
+[theme]
+base = "light"   # Thème clair par défaut
