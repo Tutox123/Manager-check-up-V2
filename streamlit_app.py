@@ -300,10 +300,13 @@ def metric_editor(df):
         except Exception as e:
             st.error(f"Erreur : {str(e)}")
 
+# ... (keep all previous imports and setup code) ...
+
 def main():
     # Initialisation
     if 'file_uploaded' not in st.session_state:
         st.session_state.file_uploaded = False
+        st.session_state.excluded_managers = []  # NEW: Track excluded managers
     
     # Chargement des données
     if not st.session_state.file_uploaded:
@@ -320,7 +323,7 @@ def main():
         st.session_state.clear()
         st.rerun()
     
-    # Scaling des données
+    # Scaling des données (unchanged)
     for col in RISK_COLS:
         if col in st.session_state.df_clean.columns:
             st.session_state.df_clean[f"Scaled_{col}"] = min_max_scale(
@@ -335,7 +338,7 @@ def main():
                 REWARD_INVERTS.get(col, False)
             )
     
-    # Configuration des poids
+    # Configuration des poids (unchanged)
     st.sidebar.header("⚖️ Weight Configuration")
     
     st.sidebar.subheader("Risk Weights")
@@ -366,20 +369,48 @@ def main():
             )
             reward_weights[col] = st.session_state[weight_key]
     
-    # Calcul des scores
+    # Calcul des scores (unchanged)
     current_df = calculate_scores(
         st.session_state.df_clean.copy(),
         risk_weights,
         reward_weights
     )
     
-    # Onglets
-    tab1, tab2 = st.tabs(["📊 Visualization", "✏️ Edit Metrics"])
+    # NEW: Manager Selection Tab
+    def manager_selection_tab():
+        st.header("👥 Manager Selection")
+        
+        if 'df_clean' not in st.session_state:
+            st.warning("Please load data first")
+            return
+        
+        all_managers = current_df["Manager Name"].unique().tolist()
+        selected_managers = st.multiselect(
+            "Select managers to EXCLUDE from visualization:",
+            options=all_managers,
+            default=st.session_state.get('excluded_managers', []),
+            key="manager_exclusion"
+        )
+        
+        st.session_state.excluded_managers = selected_managers
+        
+        st.info(f"Currently excluding {len(selected_managers)} managers: {', '.join(selected_managers) if selected_managers else 'None'}")
+        
+        if st.button("Update Selection"):
+            st.success("Selection updated!")
+            st.rerun()
+    
+    # Onglets (updated with new tab)
+    tab1, tab2, tab3 = st.tabs(["📊 Visualization", "✏️ Edit Metrics", "👥 Manager Selection"])
+    
     with tab1:
         st.header("Risk-Reward Matrix")
         
+        # Filter out excluded managers
+        filtered_df = current_df[~current_df["Manager Name"].isin(st.session_state.excluded_managers)]
+        
         fig = px.scatter(
-            current_df,
+            filtered_df,  # Use filtered DataFrame
             x="Risk_Score",
             y="Reward_Score",
             size="Bubble_Size",
@@ -422,14 +453,17 @@ def main():
         
         with st.expander("Detailed Metrics Table", expanded=False):
             st.dataframe(
-                current_df.set_index("Manager Name"),
+                filtered_df.set_index("Manager Name"),  # Show filtered data
                 use_container_width=True
             )
 
     with tab2:
         metric_editor(current_df)
     
-    # Export des résultats
+    with tab3:
+        manager_selection_tab()  # NEW: Manager selection tab
+    
+    # Export des résultats (unchanged)
     st.sidebar.header("📤 Export Options")
     if st.sidebar.button("💾 Generate Report"):
         with st.spinner("Génération du rapport..."):
