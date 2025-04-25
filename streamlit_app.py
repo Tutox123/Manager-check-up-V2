@@ -233,7 +233,7 @@ def calculate_scores(df, risk_weights, reward_weights, risk_cols, reward_cols):
     
     df["Reward_Score"] = (reward_score_numerator / reward_score_denominator) if reward_score_denominator > 0 else 0.5
     
-    df["Average_Score"] = (df["Risk_Score"] + df["Reward_Score"]) / 2
+    df["Average_Score"] = ((1-df["Risk_Score"]) + df["Reward_Score"]) / 2
     
     if "Deal Count" in df.columns and "AUM" in df.columns:
         df["Bubble_Size"] = calculate_bubble_size(df["Deal Count"], df["AUM"])
