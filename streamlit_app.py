@@ -20,7 +20,7 @@ st.set_page_config(
     page_icon="📈"
 )
 
-# Style CSS
+# Style CSS sobre
 st.markdown("""
     <style>
         /* Police et couleurs */
@@ -79,17 +79,10 @@ st.markdown("""
         .dataframe {
             border: 1px solid #e0e0e0;
         }
-        
-        /* Metric move buttons */
-        .metric-move-btn {
-            font-size: 0.8em;
-            padding: 0.2em 0.5em;
-            margin-left: 0.5em;
-        }
     </style>
 """, unsafe_allow_html=True)
 
-# Titre
+# Titre sobre
 st.markdown("<h1 style='text-align: center; margin-bottom: 1em;'>Manager Risk-Reward Analysis</h1>", unsafe_allow_html=True)
 
 # Fonctions utilitaires
@@ -124,17 +117,7 @@ def calculate_bubble_size(deal_count, aum):
     combined = 0.5 * deal_count_norm + 0.5 * aum_norm
     return 10 + combined * 50
 
-# Initial metric definitions
-INITIAL_RISK_COLS = [
-    "WARF", "Caa/CCC Calculated %", "Defaulted %", "Largest industry concentration %",
-    "Diversity", "Annualized Default Rate (%)", "Equity St. Deviation",
-    "Junior OC cushion", "IDT Cushion", "Caa %", "CCC % (S&P)", "Bond %",
-    "Cov-Lite %", "WA loans Price", "Avg Col Quality Test/ Trigger %", "WAS/WARF",
-    "% of collateral rated B3", "MV NAV (Equity)"
-]
-
-INITIAL_REWARD_COLS = ["WAS", "Annualized Eq Rt (%)"]
-
+# Définition des colonnes
 PERCENTAGE_METRICS = [
     "Caa/CCC Calculated %", "Defaulted %", "Largest industry concentration %",
     "Annualized Default Rate (%)", "Junior OC cushion", "IDT Cushion", "Caa %",
@@ -144,33 +127,29 @@ PERCENTAGE_METRICS = [
     "Equity St. Deviation"
 ]
 
-BASE_METRICS = INITIAL_RISK_COLS + INITIAL_REWARD_COLS + ["Deal Count", "AUM"]
+RISK_COLS = [
+    "WARF", "Caa/CCC Calculated %", "Defaulted %", "Largest industry concentration %",
+    "Diversity", "Annualized Default Rate (%)", "Equity St. Deviation",
+    "Junior OC cushion", "IDT Cushion", "Caa %", "CCC % (S&P)", "Bond %",
+    "Cov-Lite %", "WA loans Price", "Avg Col Quality Test/ Trigger %","WAS/WARF",
+    "% of collateral rated B3", "MV NAV (Equity)"
+]
 
-# Initialize inversion settings (now dynamic)
-def get_inversion_settings(risk_cols, reward_cols):
-    """Generate inversion settings based on current categories"""
-    inversions = {}
-    # Default risk inversions
-    risk_inverts = {
-        "WARF": False, "Caa/CCC Calculated %": False, "Defaulted %": False,
-        "Largest industry concentration %": False, "Diversity": True,
-        "Annualized Default Rate (%)": False, "Equity St. Deviation": False,
-        "Junior OC cushion": True, "IDT Cushion": True, "Caa %": False,
-        "CCC % (S&P)": False, "Bond %": False, "Cov-Lite %": False,
-        "WA loans Price": True, "Avg Col Quality Test/ Trigger %": True,
-        "% of collateral rated B3": False, "MV NAV (Equity)": True, "WAS/WARF": True
-    }
-    
-    # Default reward inversions (usually False)
-    reward_inverts = {col: False for col in reward_cols}
-    
-    # Apply based on current categories
-    for col in risk_cols:
-        inversions[col] = risk_inverts.get(col, False)
-    for col in reward_cols:
-        inversions[col] = reward_inverts.get(col, False)
-    
-    return inversions
+REWARD_COLS = ["WAS", "Annualized Eq Rt (%)"]
+BASE_METRICS = RISK_COLS + REWARD_COLS + ["Deal Count", "AUM"]
+
+# Initial inversion settings (can be overridden by UI)
+DEFAULT_RISK_INVERTS = {
+    "WARF": False, "Caa/CCC Calculated %": False, "Defaulted %": False,
+    "Largest industry concentration %": False, "Diversity": True,
+    "Annualized Default Rate (%)": False, "Equity St. Deviation": False,
+    "Junior OC cushion": True, "IDT Cushion": True, "Caa %": False,
+    "CCC % (S&P)": False, "Bond %": False, "Cov-Lite %": False,
+    "WA loans Price": True, "Avg Col Quality Test/ Trigger %": True,
+    "% of collateral rated B3": False, "MV NAV (Equity)": True,"WAS/WARF": True
+}
+
+DEFAULT_REWARD_INVERTS = {col: False for col in REWARD_COLS}
 
 def load_data():
     st.sidebar.header("📤 Data Upload")
@@ -185,7 +164,7 @@ def load_data():
             df = pd.read_csv(uploaded_file, sep=";", decimal=",", thousands=' ')
             st.session_state.df_raw = df.copy()
             
-            # Clean data
+            # Data cleaning
             df["Manager Name"] = df["Manager Name"].apply(clean_numeric, is_manager_name=True)
             for col in df.columns:
                 if col != "Manager Name":
@@ -200,19 +179,20 @@ def load_data():
             return None
     return None
 
-def calculate_scores(df, risk_weights, reward_weights, risk_cols, reward_cols):
-    # Get current inversion settings
-    inversion_settings = get_inversion_settings(risk_cols, reward_cols)
-    
-    # First ensure all metrics are scaled
-    for col in risk_cols + reward_cols:
-        if col in df.columns and f"Scaled_{col}" not in df.columns:
-            df[f"Scaled_{col}"] = min_max_scale(df[col], inversion_settings.get(col, False))
-    
+def calculate_scores(df, risk_weights, reward_weights):
     # Risk Score
     risk_score_numerator = 0
     risk_score_denominator = 0
-    for col in risk_cols:
+    
+    # Get current inversion settings from UI or defaults
+    risk_inverts = {}
+    for col in RISK_COLS:
+        if f"invert_risk_{col}" in st.session_state:
+            risk_inverts[col] = st.session_state[f"invert_risk_{col}"]
+        else:
+            risk_inverts[col] = DEFAULT_RISK_INVERTS.get(col, False)
+    
+    for col in RISK_COLS:
         scaled_col = f"Scaled_{col}"
         if scaled_col in df.columns:
             weight = risk_weights.get(col, 0)
@@ -224,7 +204,16 @@ def calculate_scores(df, risk_weights, reward_weights, risk_cols, reward_cols):
     # Reward Score
     reward_score_numerator = 0
     reward_score_denominator = 0
-    for col in reward_cols:
+    
+    # Get current inversion settings from UI or defaults
+    reward_inverts = {}
+    for col in REWARD_COLS:
+        if f"invert_reward_{col}" in st.session_state:
+            reward_inverts[col] = st.session_state[f"invert_reward_{col}"]
+        else:
+            reward_inverts[col] = DEFAULT_REWARD_INVERTS.get(col, False)
+    
+    for col in REWARD_COLS:
         scaled_col = f"Scaled_{col}"
         if scaled_col in df.columns:
             weight = reward_weights.get(col, 0)
@@ -246,7 +235,7 @@ def metric_editor(df):
     st.header("✏️ Manager Metrics Editor")
     
     if 'df_clean' not in st.session_state:
-        st.warning("Please load a file first")
+        st.warning("Please upload a file first")
         return
     
     if 'editable_df' not in st.session_state:
@@ -263,6 +252,7 @@ def metric_editor(df):
     ].index[0]
     
     st.markdown(f"### Editing: **{selected_manager}**")
+    st.markdown("<div class='metric-modif'>", unsafe_allow_html=True)
     
     cols = st.columns(3)
     current_col = 0
@@ -294,37 +284,41 @@ def metric_editor(df):
             
             current_col = (current_col + 1) % 3
     
+    st.markdown("</div>", unsafe_allow_html=True)
+    
     if st.button("💾 Save", key=f"save_{selected_manager}"):
         try:
             # Apply modifications
             for col, new_value in modifications.items():
                 st.session_state.editable_df.at[manager_idx, col] = new_value
             
-            # Update scaled columns
-            inversion_settings = get_inversion_settings(
-                st.session_state.risk_cols, 
-                st.session_state.reward_cols
-            )
-            
-            for col in modifications:
-                if col in inversion_settings:
-                    st.session_state.editable_df[f"Scaled_{col}"] = min_max_scale(
-                        st.session_state.editable_df[col], 
-                        inversion_settings[col]
-                    )
+            # Update scaled columns with current inversion settings
+            for col in set(modifications.keys()) & set(RISK_COLS + REWARD_COLS):
+                invert = False
+                if col in RISK_COLS:
+                    if f"invert_risk_{col}" in st.session_state:
+                        invert = st.session_state[f"invert_risk_{col}"]
+                    else:
+                        invert = DEFAULT_RISK_INVERTS.get(col, False)
+                elif col in REWARD_COLS:
+                    if f"invert_reward_{col}" in st.session_state:
+                        invert = st.session_state[f"invert_reward_{col}"]
+                    else:
+                        invert = DEFAULT_REWARD_INVERTS.get(col, False)
+                
+                st.session_state.editable_df[f"Scaled_{col}"] = min_max_scale(
+                    st.session_state.editable_df[col], 
+                    invert
+                )
             
             # Recalculate scores
-            risk_weights = {col: st.session_state.get(f'risk_{col}', 1.0) 
-                          for col in st.session_state.risk_cols}
-            reward_weights = {col: st.session_state.get(f'reward_{col}', 1.0) 
-                            for col in st.session_state.reward_cols}
+            risk_weights = {col: st.session_state.get(f'risk_{col}', 1.0) for col in RISK_COLS}
+            reward_weights = {col: st.session_state.get(f'reward_{col}', 1.0) for col in REWARD_COLS}
             
             updated_df = calculate_scores(
                 st.session_state.editable_df,
                 risk_weights,
-                reward_weights,
-                st.session_state.risk_cols,
-                st.session_state.reward_cols
+                reward_weights
             )
             
             # Update main data
@@ -337,129 +331,19 @@ def metric_editor(df):
         except Exception as e:
             st.error(f"Error: {str(e)}")
 
-def metric_configuration():
-    st.header("⚙️ Metric Configuration")
-    
-    if 'df_clean' not in st.session_state:
-        st.warning("Please load data first")
-        return
-    
-    # Current categories
-    risk_cols = st.session_state.get('risk_cols', INITIAL_RISK_COLS)
-    reward_cols = st.session_state.get('reward_cols', INITIAL_REWARD_COLS)
-    
-    # Get available metrics from data
-    available_metrics = [col for col in BASE_METRICS if col in st.session_state.df_clean.columns]
-    
-    # Create two columns for the metric lists
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Risk Metrics")
-        risk_to_move = []
-        for col in risk_cols:
-            if col in available_metrics:
-                cols = st.columns([4, 1])
-                with cols[0]:
-                    st.markdown(f"• {col}")
-                with cols[1]:
-                    if st.button("➡️", key=f"to_reward_{col}"):
-                        risk_to_move.append(col)
-    
-    with col2:
-        st.subheader("Reward Metrics")
-        reward_to_move = []
-        for col in reward_cols:
-            if col in available_metrics:
-                cols = st.columns([4, 1])
-                with cols[0]:
-                    st.markdown(f"• {col}")
-                with cols[1]:
-                    if st.button("⬅️", key=f"to_risk_{col}"):
-                        reward_to_move.append(col)
-    
-    # Update categories if any moves were requested
-    if risk_to_move or reward_to_move:
-        # Move metrics from risk to reward
-        for col in risk_to_move:
-            if col in st.session_state.risk_cols:
-                st.session_state.risk_cols.remove(col)
-                st.session_state.reward_cols.append(col)
-                # Preserve weight
-                if f'reward_{col}' not in st.session_state:
-                    st.session_state[f'reward_{col}'] = st.session_state.get(f'risk_{col}', 1.0)
-        
-        # Move metrics from reward to risk
-        for col in reward_to_move:
-            if col in st.session_state.reward_cols:
-                st.session_state.reward_cols.remove(col)
-                st.session_state.risk_cols.append(col)
-                # Preserve weight
-                if f'risk_{col}' not in st.session_state:
-                    st.session_state[f'risk_{col}'] = st.session_state.get(f'reward_{col}', 1.0)
-        
-        st.success("Categories updated!")
-        st.rerun()
-    
-    # Display current inversion settings
-    st.subheader("Inversion Settings")
-    st.write("""
-        Inverted metrics are scaled in reverse (higher values become lower scores).
-        Risk metrics are inverted when lower values are better (e.g., Diversity).
-    """)
-    
-    inversion_settings = get_inversion_settings(risk_cols, reward_cols)
-    inv_df = pd.DataFrame({
-        'Metric': list(inversion_settings.keys()),
-        'Is Inverted': list(inversion_settings.values()),
-        'Category': ['Risk' if m in risk_cols else 'Reward' for m in inversion_settings.keys()]
-    })
-    
-    st.dataframe(inv_df, hide_index=True)
-
-def manager_selection_tab():
-    st.header("👥 Manager Selection")
-    
-    if 'df_clean' not in st.session_state:
-        st.warning("Please load data first")
-        return
-    
-    all_managers = st.session_state.df_clean["Manager Name"].unique().tolist()
-    selected_managers = st.multiselect(
-        "Select managers to EXCLUDE from visualization:",
-        options=all_managers,
-        default=st.session_state.get('excluded_managers', []),
-        key="manager_exclusion"
-    )
-    
-    st.session_state.excluded_managers = selected_managers
-    
-    st.info(f"Currently excluding {len(selected_managers)} managers: {', '.join(selected_managers) if selected_managers else 'None'}")
-    
-    if st.button("Update Selection"):
-        st.success("Selection updated!")
-        st.rerun()
-
 def main():
-    # Initialisation
+    # Initialization
     if 'file_uploaded' not in st.session_state:
         st.session_state.file_uploaded = False
-        st.session_state.excluded_managers = []
     
-    # Initialize metric categories if not already set
-    if 'risk_cols' not in st.session_state:
-        st.session_state.risk_cols = INITIAL_RISK_COLS.copy()
-    if 'reward_cols' not in st.session_state:
-        st.session_state.reward_cols = INITIAL_REWARD_COLS.copy()
-    
-    # Load data
+    # Data loading
     if not st.session_state.file_uploaded:
         df = load_data()
         if df is None:
             return
     
     if 'df_clean' not in st.session_state:
-        st.warning("Please load a CSV file")
+        st.warning("Please upload a CSV file")
         return
     
     # Reset button
@@ -467,13 +351,48 @@ def main():
         st.session_state.clear()
         st.rerun()
     
-    # Weight configuration in sidebar
+    # Metric inversion UI
+    st.sidebar.header("🔄 Metric Inversion Settings")
+    
+    st.sidebar.subheader("Risk Metrics")
+    for col in RISK_COLS:
+        if col in st.session_state.df_clean.columns:
+            default_invert = DEFAULT_RISK_INVERTS.get(col, False)
+            st.checkbox(
+                f"Invert {col}",
+                value=default_invert,
+                key=f"invert_risk_{col}"
+            )
+    
+    st.sidebar.subheader("Reward Metrics")
+    for col in REWARD_COLS:
+        if col in st.session_state.df_clean.columns:
+            default_invert = DEFAULT_REWARD_INVERTS.get(col, False)
+            st.checkbox(
+                f"Invert {col}",
+                value=default_invert,
+                key=f"invert_reward_{col}"
+            )
+    
+    # Manager visibility controls
+    with st.expander("👥 Manager Visibility Settings", expanded=False):
+        all_managers = st.session_state.df_clean["Manager Name"].unique()
+        hidden_managers = st.session_state.get("hidden_managers", set())
+        
+        visible_managers = st.multiselect(
+            "Hide managers from visualization (still included in calculations):",
+            options=all_managers,
+            default=list(hidden_managers),
+            key="manager_filter"
+        )
+        st.session_state.hidden_managers = set(visible_managers)
+    
+    # Weight configuration
     st.sidebar.header("⚖️ Weight Configuration")
     
-    # Risk weights
     st.sidebar.subheader("Risk Weights")
     risk_weights = {}
-    for col in st.session_state.risk_cols:
+    for col in RISK_COLS:
         if col in st.session_state.df_clean.columns:
             weight_key = f'risk_{col}'
             if weight_key not in st.session_state:
@@ -485,10 +404,9 @@ def main():
             )
             risk_weights[col] = st.session_state[weight_key]
     
-    # Reward weights
     st.sidebar.subheader("Reward Weights")
     reward_weights = {}
-    for col in st.session_state.reward_cols:
+    for col in REWARD_COLS:
         if col in st.session_state.df_clean.columns:
             weight_key = f'reward_{col}'
             if weight_key not in st.session_state:
@@ -500,23 +418,38 @@ def main():
             )
             reward_weights[col] = st.session_state[weight_key]
     
-    # Calculate scores with current categories
+    # Data scaling with current inversion settings
+    for col in RISK_COLS:
+        if col in st.session_state.df_clean.columns:
+            invert = st.session_state.get(f"invert_risk_{col}", DEFAULT_RISK_INVERTS.get(col, False))
+            st.session_state.df_clean[f"Scaled_{col}"] = min_max_scale(
+                st.session_state.df_clean[col], 
+                invert
+            )
+    
+    for col in REWARD_COLS:
+        if col in st.session_state.df_clean.columns:
+            invert = st.session_state.get(f"invert_reward_{col}", DEFAULT_REWARD_INVERTS.get(col, False))
+            st.session_state.df_clean[f"Scaled_{col}"] = min_max_scale(
+                st.session_state.df_clean[col], 
+                invert
+            )
+    
+    # Score calculation
     current_df = calculate_scores(
         st.session_state.df_clean.copy(),
         risk_weights,
-        reward_weights,
-        st.session_state.risk_cols,
-        st.session_state.reward_cols
+        reward_weights
     )
     
-    # Main tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Visualization", "✏️ Edit Metrics", "⚙️ Metric Config", "👥 Manager Select"])
+    # Tabs
+    tab1, tab2 = st.tabs(["📊 Visualization", "✏️ Edit Metrics"])
     
     with tab1:
         st.header("Risk-Reward Matrix")
         
-        # Filter out excluded managers
-        filtered_df = current_df[~current_df["Manager Name"].isin(st.session_state.excluded_managers)]
+        # Filter managers based on visibility settings
+        filtered_df = current_df[~current_df["Manager Name"].isin(st.session_state.get("hidden_managers", set()))]
         
         fig = px.scatter(
             filtered_df,
@@ -565,15 +498,9 @@ def main():
                 filtered_df.set_index("Manager Name"),
                 use_container_width=True
             )
-
+    
     with tab2:
         metric_editor(current_df)
-    
-    with tab3:
-        metric_configuration()
-    
-    with tab4:
-        manager_selection_tab()
     
     # Export options
     st.sidebar.header("📤 Export Options")
@@ -587,7 +514,7 @@ def main():
                 export_cols = [
                     "Manager Name", "Risk_Score", "Reward_Score", 
                     "Average_Score", "Bubble_Size"
-                ] + [col for col in BASE_METRICS if col in current_df.columns]
+                ] + BASE_METRICS
                 
                 export_df = current_df[[c for c in export_cols if c in current_df.columns]]
                 
@@ -603,33 +530,28 @@ def main():
                 with pd.ExcelWriter(excel_path) as writer:
                     export_df.to_excel(writer, sheet_name="Scores", index=False)
                     
-                    # Add weights sheet
-                    weights_data = []
-                    for col in st.session_state.risk_cols:
-                        if col in risk_weights:
-                            weights_data.append({
-                                "Metric": col,
-                                "Weight": risk_weights[col],
-                                "Type": "Risk",
-                                "Inverted": get_inversion_settings(
-                                    st.session_state.risk_cols,
-                                    st.session_state.reward_cols
-                                ).get(col, False)
-                            })
+                    # Include inversion settings in export
+                    inversion_settings = []
+                    for col in RISK_COLS + REWARD_COLS:
+                        if col in RISK_COLS:
+                            inverted = st.session_state.get(f"invert_risk_{col}", DEFAULT_RISK_INVERTS.get(col, False))
+                        else:
+                            inverted = st.session_state.get(f"invert_reward_{col}", DEFAULT_REWARD_INVERTS.get(col, False))
+                        inversion_settings.append({
+                            "Metric": col,
+                            "Inverted": inverted,
+                            "Type": "Risk" if col in RISK_COLS else "Reward"
+                        })
                     
-                    for col in st.session_state.reward_cols:
-                        if col in reward_weights:
-                            weights_data.append({
-                                "Metric": col,
-                                "Weight": reward_weights[col],
-                                "Type": "Reward",
-                                "Inverted": get_inversion_settings(
-                                    st.session_state.risk_cols,
-                                    st.session_state.reward_cols
-                                ).get(col, False)
-                            })
+                    inversion_df = pd.DataFrame(inversion_settings)
+                    inversion_df.to_excel(writer, sheet_name="Inversion Settings", index=False)
                     
-                    weights_df = pd.DataFrame(weights_data)
+                    # Include weights
+                    weights_df = pd.DataFrame({
+                        "Metric": list(risk_weights.keys()) + list(reward_weights.keys()),
+                        "Weight": list(risk_weights.values()) + list(reward_weights.values()),
+                        "Type": ["Risk"]*len(risk_weights) + ["Reward"]*len(reward_weights)
+                    })
                     weights_df.to_excel(writer, sheet_name="Weights", index=False)
                 
                 # Download buttons
