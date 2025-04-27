@@ -97,6 +97,15 @@ def calculate_bubble_size(deal_count, aum):
     return 10 + combined * 50
 
 # Définition des colonnes
+ALL_METRICS = [
+    "WARF", "Caa/CCC Calculated %", "Defaulted %", "Largest industry concentration %",
+    "Diversity", "Annualized Default Rate (%)", "Equity St. Deviation",
+    "Junior OC cushion", "IDT Cushion", "Caa %", "CCC % (S&P)", "Bond %",
+    "Cov-Lite %", "WA loans Price", "Avg Col Quality Test/ Trigger %","WAS/WARF",
+    "% of collateral rated B3", "MV NAV (Equity)", "WAS", "Annualized Eq Rt (%)",
+    "Deal Count", "AUM"
+]
+
 PERCENTAGE_METRICS = [
     "Caa/CCC Calculated %", "Defaulted %", "Largest industry concentration %",
     "Annualized Default Rate (%)", "Junior OC cushion", "IDT Cushion", "Caa %",
@@ -106,7 +115,8 @@ PERCENTAGE_METRICS = [
     "Equity St. Deviation"
 ]
 
-RISK_COLS = [
+# Paramètres par défaut initiaux
+DEFAULT_RISK_COLS = [
     "WARF", "Caa/CCC Calculated %", "Defaulted %", "Largest industry concentration %",
     "Diversity", "Annualized Default Rate (%)", "Equity St. Deviation",
     "Junior OC cushion", "IDT Cushion", "Caa %", "CCC % (S&P)", "Bond %",
@@ -114,10 +124,9 @@ RISK_COLS = [
     "% of collateral rated B3", "MV NAV (Equity)"
 ]
 
-REWARD_COLS = ["WAS", "Annualized Eq Rt (%)"]
-BASE_METRICS = RISK_COLS + REWARD_COLS + ["Deal Count", "AUM"]
+DEFAULT_REWARD_COLS = ["WAS", "Annualized Eq Rt (%)"]
+BASE_METRICS = DEFAULT_RISK_COLS + DEFAULT_REWARD_COLS + ["Deal Count", "AUM"]
 
-# Paramètres par défaut
 DEFAULT_RISK_INVERTS = {
     "WARF": False, "Caa/CCC Calculated %": False, "Defaulted %": False,
     "Largest industry concentration %": False, "Diversity": True,
@@ -128,7 +137,8 @@ DEFAULT_RISK_INVERTS = {
     "% of collateral rated B3": False, "MV NAV (Equity)": True,"WAS/WARF": True
 }
 
-DEFAULT_REWARD_INVERTS = {col: False for col in REWARD_COLS}
+DEFAULT_REWARD_INVERTS = {col: False for col in DEFAULT_REWARD_COLS}
+
 
 def load_data():
     st.sidebar.header("📤 Data Upload")
@@ -160,7 +170,16 @@ def load_data():
             return None
     return None
 
+def get_current_metric_types():
+    """Retourne les métriques classées par type selon la configuration actuelle"""
+    risk_cols = st.session_state.get('custom_risk_cols', DEFAULT_RISK_COLS.copy())
+    reward_cols = st.session_state.get('custom_reward_cols', DEFAULT_REWARD_COLS.copy())
+    return risk_cols, reward_cols
+
 def calculate_scores(df, risk_weights, reward_weights):
+    # Get current metric classification
+    risk_cols, reward_cols = get_current_metric_types()
+    
     # Filter out excluded managers
     working_df = df[~df["Manager Name"].isin(st.session_state.get("excluded_managers", set()))]
     
@@ -168,7 +187,7 @@ def calculate_scores(df, risk_weights, reward_weights):
     risk_score_numerator = 0
     risk_score_denominator = 0
     
-    for col in RISK_COLS:
+    for col in risk_cols:
         scaled_col = f"Scaled_{col}"
         if scaled_col in working_df.columns:
             weight = risk_weights.get(col, 0)
@@ -181,7 +200,7 @@ def calculate_scores(df, risk_weights, reward_weights):
     reward_score_numerator = 0
     reward_score_denominator = 0
     
-    for col in REWARD_COLS:
+    for col in reward_cols:
         scaled_col = f"Scaled_{col}"
         if scaled_col in working_df.columns:
             weight = reward_weights.get(col, 0)
@@ -203,6 +222,46 @@ def calculate_scores(df, risk_weights, reward_weights):
     
     return df
 
+def metric_type_editor():
+    st.sidebar.header("🔀 Metric Type Configuration")
+    
+    risk_cols, reward_cols = get_current_metric_types()
+    available_metrics = [m for m in ALL_METRICS if m not in risk_cols and m not in reward_cols]
+    
+    with st.sidebar.expander("Change Metric Types"):
+        st.write("**Current Risk Metrics:**")
+        for metric in risk_cols:
+            if st.button(f"➡️ {metric}", key=f"risk_to_reward_{metric}"):
+                reward_cols.append(metric)
+                risk_cols.remove(metric)
+                st.session_state.custom_risk_cols = risk_cols
+                st.session_state.custom_reward_cols = reward_cols
+                st.rerun()
+        
+        st.write("**Current Reward Metrics:**")
+        for metric in reward_cols:
+            if st.button(f"⬅️ {metric}", key=f"reward_to_risk_{metric}"):
+                risk_cols.append(metric)
+                reward_cols.remove(metric)
+                st.session_state.custom_risk_cols = risk_cols
+                st.session_state.custom_reward_cols = reward_cols
+                st.rerun()
+        
+        if available_metrics:
+            st.write("**Available Metrics:**")
+            for metric in available_metrics:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write(metric)
+                with col2:
+                    if st.button("➕Risk", key=f"add_risk_{metric}"):
+                        risk_cols.append(metric)
+                        st.session_state.custom_risk_cols = risk_cols
+                        st.rerun()
+                    if st.button("➕Reward", key=f"add_reward_{metric}"):
+                        reward_cols.append(metric)
+                        st.session_state.custom_reward_cols = reward_cols
+                        st.rerun()
 def metric_editor(df):
     st.header("✏️ Manager Metrics Editor")
     
@@ -342,9 +401,11 @@ def manager_selection_interface():
         st.markdown("</div>", unsafe_allow_html=True)
 
 def main():
-    # Initialization
     if 'file_uploaded' not in st.session_state:
         st.session_state.file_uploaded = False
+        st.session_state.custom_risk_cols = DEFAULT_RISK_COLS.copy()
+        st.session_state.custom_reward_cols = DEFAULT_REWARD_COLS.copy()
+    
     
     # Data loading
     if not st.session_state.file_uploaded:
@@ -483,6 +544,7 @@ def main():
         metric_editor(current_df)
     
     # Export options
+       # Export options
     st.sidebar.header("📤 Export Options")
     if st.sidebar.button("💾 Generate Report"):
         with st.spinner("Generating report..."):
@@ -490,11 +552,14 @@ def main():
                 timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
                 os.makedirs("output", exist_ok=True)
                 
+                # Get current metric classification
+                risk_cols, reward_cols = get_current_metric_types()
+                
                 # Prepare data
                 export_cols = [
                     "Manager Name", "Risk_Score", "Reward_Score", 
                     "Average_Score", "Bubble_Size"
-                ] + BASE_METRICS
+                ] + risk_cols + reward_cols + ["Deal Count", "AUM"]
                 
                 export_df = current_df[[c for c in export_cols if c in current_df.columns]]
                 
@@ -508,9 +573,10 @@ def main():
                 excel_path = f"output/{excel_filename}"
                 
                 with pd.ExcelWriter(excel_path) as writer:
+                    # 1. Scores sheet
                     export_df.to_excel(writer, sheet_name="Scores", index=False)
                     
-                    # Include manager selections
+                    # 2. Manager Selections sheet
                     selections_df = pd.DataFrame({
                         "Manager": current_df["Manager Name"],
                         "Hidden": current_df["Manager Name"].isin(st.session_state.get("hidden_managers", set())),
@@ -518,24 +584,38 @@ def main():
                     })
                     selections_df.to_excel(writer, sheet_name="Manager Selections", index=False)
                     
-                    # Include inversion settings
+                    # 3. Metric Types sheet
+                    metric_types_df = pd.DataFrame({
+                        "Metric": risk_cols + reward_cols,
+                        "Type": ["Risk"]*len(risk_cols) + ["Reward"]*len(reward_cols),
+                        "Default Inverted": [
+                            DEFAULT_RISK_INVERTS.get(col, False) if col in DEFAULT_RISK_COLS 
+                            else DEFAULT_REWARD_INVERTS.get(col, False) 
+                            for col in risk_cols + reward_cols
+                        ]
+                    })
+                    metric_types_df.to_excel(writer, sheet_name="Metric Types", index=False)
+                    
+                    # 4. Current Inversion Settings sheet
                     inversion_df = pd.DataFrame([
                         {
                             "Metric": col,
                             "Inverted": st.session_state.get(f"invert_{col}", 
-                                                          DEFAULT_RISK_INVERTS.get(col, False) if col in RISK_COLS 
-                                                          else DEFAULT_REWARD_INVERTS.get(col, False)),
-                            "Type": "Risk" if col in RISK_COLS else "Reward"
+                                          DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols 
+                                          else DEFAULT_REWARD_INVERTS.get(col, False)),
+                            "Type": "Risk" if col in risk_cols else "Reward"
                         }
-                        for col in RISK_COLS + REWARD_COLS
+                        for col in risk_cols + reward_cols
                     ])
                     inversion_df.to_excel(writer, sheet_name="Inversion Settings", index=False)
                     
-                    # Include weights
+                    # 5. Weights sheet
                     weights_df = pd.DataFrame({
-                        "Metric": list(risk_weights.keys()) + list(reward_weights.keys()),
-                        "Weight": list(risk_weights.values()) + list(reward_weights.values()),
-                        "Type": ["Risk"]*len(risk_weights) + ["Reward"]*len(reward_weights)
+                        "Metric": list(st.session_state.get(f'risk_{col}', 1.0) for col in risk_cols) + 
+                                 list(st.session_state.get(f'reward_{col}', 1.0) for col in reward_cols),
+                        "Weight": list(st.session_state.get(f'risk_{col}', 1.0) for col in risk_cols) + 
+                                  list(st.session_state.get(f'reward_{col}', 1.0) for col in reward_cols),
+                        "Type": ["Risk"]*len(risk_cols) + ["Reward"]*len(reward_cols)
                     })
                     weights_df.to_excel(writer, sheet_name="Weights", index=False)
                 
@@ -563,6 +643,5 @@ def main():
             
             except Exception as e:
                 st.sidebar.error(f"Export error: {str(e)}")
-
 if __name__ == "__main__":
     main()
