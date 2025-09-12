@@ -1,4 +1,3 @@
- (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
 diff --git a/streamlit_app.py b/streamlit_app.py
 index 2fbd912b01c6a6faf301f4faf5356bf623357cdd..c0e4bf767087410fb89198e003968522acc43eca 100644
 --- a/streamlit_app.py
@@ -451,6 +450,3 @@ index 2fbd912b01c6a6faf301f4faf5356bf623357cdd..c0e4bf767087410fb89198e003968522
                      selections_df.to_excel(writer, sheet_name="Manager Selections", index=False)
                      
                      # 3. Metric Types sheet
- 
-EOF
-)
