@@ -161,7 +161,7 @@ def load_data():
                 df = pd.read_csv(uploaded_file, sep=";", decimal=",", thousands=' ')
 
                 # Extract date components from filename (MM-DD-YY)
-                date_match = re.search(r"(\\d{2})-(\\d{2})-(\\d{2})", uploaded_file.name)
+                date_match = re.search(r"(\d{2})-(\d{2})-(\d{2})", uploaded_file.name)
                 if date_match:
                     m, d, y = date_match.groups()
                     date_val = pd.to_datetime(f"{m}-{d}-{y}", format="%m-%d-%y")
@@ -332,5 +332,407 @@ def metric_editor(df):
     modifications = {}
 
     for col in BASE_METRICS:
-        if col in st.session_state.editable_df.columns():
-            ...
+        if col in st.session_state.editable_df.columns:
+            with cols[current_col]:
+                current_val = st.session_state.editable_df.at[manager_idx, col]
+
+                if col in PERCENTAGE_METRICS:
+                    new_val = st.number_input(
+                        f"{col} (%)",
+                        value=float(current_val * 100),
+                        min_value=0.0,
+                        max_value=100.0,
+                        step=0.1,
+                        key=f"edit_{col}_{selected_manager}"
+                    )
+                    modifications[col] = new_val / 100
+                else:
+                    new_val = st.number_input(
+                        col,
+                        value=float(current_val),
+                        step=0.1,
+                        key=f"edit_{col}_{selected_manager}"
+                    )
+                    modifications[col] = new_val
+
+            current_col = (current_col + 1) % 3
+
+    if st.button("💾 Save", key=f"save_{selected_manager}"):
+        try:
+            # Apply modifications
+            for col, new_value in modifications.items():
+                st.session_state.editable_df.at[manager_idx, col] = new_value
+
+            # Update scaled columns
+            risk_cols, reward_cols = get_current_metric_types()
+            for col in set(modifications.keys()) & set(risk_cols + reward_cols):
+                invert = st.session_state.get(f"invert_{col}",
+                                           DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols
+                                           else DEFAULT_REWARD_INVERTS.get(col, False))
+                st.session_state.editable_df[f"Scaled_{col}"] = min_max_scale(
+                    st.session_state.editable_df[col],
+                    invert
+                )
+
+            # Recalculate scores
+            risk_weights = {col: st.session_state.get(f'risk_{col}', 1.0) for col in risk_cols}
+            reward_weights = {col: st.session_state.get(f'reward_{col}', 1.0) for col in reward_cols}
+
+            updated_df = calculate_scores(
+                st.session_state.editable_df,
+                risk_weights,
+                reward_weights
+            )
+
+            # Update main data
+            st.session_state.df_clean = updated_df.copy()
+            st.session_state.editable_df = updated_df.copy()
+            st.session_state.last_update = time.time()
+
+            st.success("Changes saved successfully!")
+
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
+
+def manager_selection_interface():
+    st.header("👥 Manager Selection")
+
+    if 'df_clean' not in st.session_state:
+        st.warning("Please upload data first")
+        return
+
+    all_managers = st.session_state.df_clean["Manager Name"].unique()
+
+    # Two columns for the two lists
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Hide from Visualization")
+        st.markdown("<div class='manager-list'>", unsafe_allow_html=True)
+
+        hidden_managers = st.session_state.get("hidden_managers", set())
+        new_hidden = set()
+
+        for manager in all_managers:
+            checked = st.checkbox(
+                f"Hide {manager}",
+                value=manager in hidden_managers,
+                key=f"hide_{manager}"
+            )
+            if checked:
+                new_hidden.add(manager)
+
+        st.session_state.hidden_managers = new_hidden
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with col2:
+        st.subheader("Exclude from Calculations")
+        st.markdown("<div class='manager-list'>", unsafe_allow_html=True)
+
+        excluded_managers = st.session_state.get("excluded_managers", set())
+        new_excluded = set()
+
+        for manager in all_managers:
+            checked = st.checkbox(
+                f"Exclude {manager}",
+                value=manager in excluded_managers,
+                key=f"exclude_{manager}"
+            )
+            if checked:
+                new_excluded.add(manager)
+
+        st.session_state.excluded_managers = new_excluded
+        st.markdown("</div>", unsafe_allow_html=True)
+
+def main():
+    # Initialization
+    if 'file_uploaded' not in st.session_state:
+        st.session_state.file_uploaded = False
+        st.session_state.custom_risk_cols = DEFAULT_RISK_COLS.copy()
+        st.session_state.custom_reward_cols = DEFAULT_REWARD_COLS.copy()
+
+    # Data loading
+    if not st.session_state.file_uploaded:
+        df = load_data()
+        if df is None:
+            return
+
+    if 'df_clean' not in st.session_state:
+        st.warning("Please upload a CSV file")
+        return
+
+    # Reset button
+    if st.session_state.file_uploaded and st.sidebar.button("🔄 Reset"):
+        st.session_state.clear()
+        st.rerun()
+
+    # Metric inversion UI
+    st.sidebar.header("🔄 Metric Inversion")
+
+    risk_cols, reward_cols = get_current_metric_types()
+
+    with st.sidebar.expander("Risk Metrics Inversion"):
+        for col in risk_cols:
+            if col in st.session_state.df_clean.columns:
+                st.checkbox(
+                    f"Invert {col}",
+                    value=DEFAULT_RISK_INVERTS.get(col, False),
+                    key=f"invert_{col}"
+                )
+
+    with st.sidebar.expander("Reward Metrics Inversion"):
+        for col in reward_cols:
+            if col in st.session_state.df_clean.columns:
+                st.checkbox(
+                    f"Invert {col}",
+                    value=DEFAULT_REWARD_INVERTS.get(col, False),
+                    key=f"invert_{col}"
+                )
+
+    # Metric type configuration
+    metric_type_editor()
+
+    # Weight configuration
+    st.sidebar.header("⚖️ Weight Configuration")
+
+    risk_cols, reward_cols = get_current_metric_types()
+
+    with st.sidebar.expander("Risk Weights"):
+        risk_weights = {}
+        for col in risk_cols:
+            if col in st.session_state.df_clean.columns:
+                weight_key = f'risk_{col}'
+                if weight_key not in st.session_state:
+                    st.session_state[weight_key] = 1.0
+
+                st.session_state[weight_key] = st.slider(
+                    f"{col}", 0.0, 2.0, st.session_state[weight_key], 0.1,
+                    key=f"risk_slider_{col}"
+                )
+                risk_weights[col] = st.session_state[weight_key]
+
+    with st.sidebar.expander("Reward Weights"):
+        reward_weights = {}
+        for col in reward_cols:
+            if col in st.session_state.df_clean.columns:
+                weight_key = f'reward_{col}'
+                if weight_key not in st.session_state:
+                    st.session_state[weight_key] = 1.0
+
+                st.session_state[weight_key] = st.slider(
+                    f"{col}", 0.0, 2.0, st.session_state[weight_key], 0.1,
+                    key=f"reward_slider_{col}"
+                )
+                reward_weights[col] = st.session_state[weight_key]
+
+    # Data scaling with current inversion settings
+    for col in risk_cols + reward_cols:
+        if col in st.session_state.df_clean.columns:
+            invert = st.session_state.get(
+                f"invert_{col}",
+                DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols
+                else DEFAULT_REWARD_INVERTS.get(col, False)
+            )
+            if "Date" in st.session_state.df_clean.columns:
+                st.session_state.df_clean[f"Scaled_{col}"] = (
+                    st.session_state.df_clean.groupby("Date")[col].transform(
+                        lambda s: min_max_scale(s, invert)
+                    )
+                )
+            elif "Year" in st.session_state.df_clean.columns:
+                st.session_state.df_clean[f"Scaled_{col}"] = (
+                    st.session_state.df_clean.groupby("Year")[col].transform(
+                        lambda s: min_max_scale(s, invert)
+                    )
+                )
+            else:
+                st.session_state.df_clean[f"Scaled_{col}"] = min_max_scale(
+                    st.session_state.df_clean[col],
+                    invert
+                )
+
+    # Score calculation
+    current_df = calculate_scores(
+        st.session_state.df_clean.copy(),
+        risk_weights,
+        reward_weights
+    )
+
+    # Tabs
+    tab1, tab2, tab3 = st.tabs(["📊 Visualization", "👥 Manager Selection", "✏️ Edit Metrics"])
+
+    with tab1:
+        st.header("Risk-Reward Matrix")
+
+        # Filter managers based on visibility settings
+        filtered_df = current_df[~current_df["Manager Name"].isin(st.session_state.get("hidden_managers", set()))].copy()
+
+        highlighted = st.multiselect(
+            "Highlight managers",
+            filtered_df["Manager Name"].unique(),
+            max_selections=4
+        )
+
+        filtered_df["Highlight"] = np.where(
+            filtered_df["Manager Name"].isin(highlighted),
+            filtered_df["Manager Name"],
+            "Other"
+        )
+
+        color_map = {m: px.colors.qualitative.Bold[i % len(px.colors.qualitative.Bold)]
+                     for i, m in enumerate(highlighted)}
+        color_map["Other"] = "#CCCCCC"
+
+        scatter_args = dict(
+            x="Risk_Score",
+            y="Reward_Score",
+            size="Bubble_Size",
+            color="Highlight",
+            hover_name="Manager Name",
+            hover_data={
+                "Risk_Score": ":.3f",
+                "Reward_Score": ":.3f",
+                "Average_Score": ":.3f",
+                "Deal Count": True,
+                "AUM": ":,.0f"
+            },
+            size_max=40,
+            color_discrete_map=color_map
+        )
+        if "Date" in filtered_df.columns:
+            filtered_df = filtered_df.sort_values("Date")
+            scatter_args["animation_frame"] = "Date"
+
+        fig = px.scatter(filtered_df, **scatter_args)
+
+        fig.update_layout(
+            xaxis_range=[-0.1, 1.1],
+            yaxis_range=[-0.1, 1.1],
+            height=600,
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color="#333333"),
+            margin=dict(l=20, r=20, t=40, b=20)
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        with st.expander("Detailed Metrics Table", expanded=False):
+            if "Date" in filtered_df.columns:
+                table_df = filtered_df.set_index(["Date", "Manager Name"])
+            elif "Year" in filtered_df.columns:
+                table_df = filtered_df.set_index(["Year", "Manager Name"])
+            else:
+                table_df = filtered_df.set_index("Manager Name")
+            st.dataframe(
+                table_df,
+                use_container_width=True
+            )
+
+    with tab2:
+        manager_selection_interface()
+
+    with tab3:
+        metric_editor(current_df)
+
+    # Export options
+    st.sidebar.header("📤 Export Options")
+    if st.sidebar.button("💾 Generate Report"):
+        with st.spinner("Generating report..."):
+            try:
+                timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+                os.makedirs("output", exist_ok=True)
+
+                # Get current metric classification
+                risk_cols, reward_cols = get_current_metric_types()
+
+                # Prepare data
+                export_cols = [
+                    "Manager Name", "Date", "Year", "Month", "Risk_Score", "Reward_Score",
+                    "Average_Score", "Bubble_Size"
+                ] + risk_cols + reward_cols + ["Deal Count", "AUM"]
+
+                export_df = current_df[[c for c in export_cols if c in current_df.columns]]
+
+                # CSV
+                csv_filename = f"manager_scores_{timestamp}.csv"
+                csv_path = f"output/{csv_filename}"
+                export_df.to_csv(csv_path, index=False, sep=";", decimal=",")
+
+                # Excel
+                excel_filename = f"manager_scores_{timestamp}.xlsx"
+                excel_path = f"output/{excel_filename}"
+
+                with pd.ExcelWriter(excel_path) as writer:
+                    # 1. Scores sheet
+                    export_df.to_excel(writer, sheet_name="Scores", index=False)
+
+                    # 2. Manager Selections sheet
+                    selections_df = pd.DataFrame({
+                        "Manager": current_df["Manager Name"],
+                        "Hidden": current_df["Manager Name"].isin(st.session_state.get("hidden_managers", set())),
+                        "Excluded": current_df["Manager Name"].isin(st.session_state.get("excluded_managers", set()))
+                    })
+                    selections_df.to_excel(writer, sheet_name="Manager Selections", index=False)
+
+                    # 3. Metric Types sheet
+                    metric_types_df = pd.DataFrame({
+                        "Metric": risk_cols + reward_cols,
+                        "Type": ["Risk"]*len(risk_cols) + ["Reward"]*len(reward_cols),
+                        "Default Inverted": [
+                            DEFAULT_RISK_INVERTS.get(col, False) if col in DEFAULT_RISK_COLS
+                            else DEFAULT_REWARD_INVERTS.get(col, False)
+                            for col in risk_cols + reward_cols
+                        ]
+                    })
+                    metric_types_df.to_excel(writer, sheet_name="Metric Types", index=False)
+
+                    # 4. Current Inversion Settings sheet
+                    inversion_df = pd.DataFrame([
+                        {
+                            "Metric": col,
+                            "Inverted": st.session_state.get(f"invert_{col}",
+                                          DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols
+                                          else DEFAULT_REWARD_INVERTS.get(col, False)),
+                            "Type": "Risk" if col in risk_cols else "Reward"
+                        }
+                        for col in risk_cols + reward_cols
+                    ])
+                    inversion_df.to_excel(writer, sheet_name="Inversion Settings", index=False)
+
+                    # 5. Weights sheet
+                    weights_df = pd.DataFrame({
+                        "Metric": risk_cols + reward_cols,
+                        "Weight": [st.session_state.get(f'risk_{col}', 1.0) for col in risk_cols] +
+                                  [st.session_state.get(f'reward_{col}', 1.0) for col in reward_cols],
+                        "Type": ["Risk"]*len(risk_cols) + ["Reward"]*len(reward_cols)
+                    })
+                    weights_df.to_excel(writer, sheet_name="Weights", index=False)
+
+                # Download buttons
+                st.sidebar.success("Report generated successfully!")
+
+                col1, col2 = st.sidebar.columns(2)
+                with col1:
+                    with open(csv_path, "rb") as f:
+                        st.download_button(
+                            "📥 CSV",
+                            f,
+                            file_name=csv_filename,
+                            mime="text/csv",
+                        )
+
+                with col2:
+                    with open(excel_path, "rb") as f:
+                        st.download_button(
+                            "📊 Excel",
+                            f,
+                            file_name=excel_filename,
+                            mime="application/vnd.ms-excel",
+                        )
+
+            except Exception as e:
+                st.sidebar.error(f"Export error: {str(e)}")
+
+if __name__ == "__main__":
+    main()
