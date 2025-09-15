@@ -9,48 +9,33 @@ import plotly.express as px
 import streamlit as st
 from locale import setlocale, LC_NUMERIC
 
-# ───────────────────────────────────────────────────────────────────────────────
-# Locale (best-effort, not critical)
-# ───────────────────────────────────────────────────────────────────────────────
+# ───────── Page config & styles ─────────
 try:
     setlocale(LC_NUMERIC, 'en_US.UTF-8')
 except Exception:
-    try:
-        setlocale(LC_NUMERIC, '')
-    except Exception:
-        pass
+    try: setlocale(LC_NUMERIC, '')
+    except Exception: pass
 
-# ───────────────────────────────────────────────────────────────────────────────
-# Page config & styles
-# ───────────────────────────────────────────────────────────────────────────────
-st.set_page_config(
-    layout="wide",
-    page_title="Manager Risk Analysis",
-    page_icon="📈",
-)
-
+st.set_page_config(layout="wide", page_title="Manager Risk Analysis", page_icon="📈")
 st.markdown("""
 <style>
-  .stApp { font-family: 'Helvetica Neue', Arial, sans-serif; color: #333; }
-  h1, h2, h3 { color: #2c3e50; font-weight: 600; border-bottom: 1px solid #e0e0e0; padding-bottom: .3em; }
-  .manager-list { max-height: 400px; overflow-y: auto; border: 1px solid #e0e0e0; padding: 10px; border-radius: 4px; }
-  .stButton>button { background-color: #2c3e50; color: #fff; border: none; border-radius: 4px; padding: .5em 1em; font-weight: 500; }
-  .stButton>button:hover { background-color: #1a2634; }
+  .stApp { font-family: 'Helvetica Neue', Arial, sans-serif; color:#333; }
+  h1,h2,h3 { color:#2c3e50; font-weight:600; border-bottom:1px solid #e0e0e0; padding-bottom:.3em; }
+  .manager-list { max-height: 400px; overflow-y:auto; border:1px solid #e0e0e0; padding:10px; border-radius:4px; }
+  .stButton>button { background:#2c3e50; color:#fff; border:none; border-radius:4px; padding:.5em 1em; }
+  .stButton>button:hover { background:#1a2634; }
 </style>
 """, unsafe_allow_html=True)
-
 st.markdown("<h1 style='text-align:center;margin-bottom:1em;'>Manager Risk-Reward Analysis</h1>", unsafe_allow_html=True)
 
-# ───────────────────────────────────────────────────────────────────────────────
-# Constants / defaults
-# ───────────────────────────────────────────────────────────────────────────────
+# ───────── Constants / defaults ─────────
 ALL_METRICS = [
     "WARF", "Caa/CCC Calculated %", "Defaulted %", "Largest industry concentration %",
     "Diversity", "Annualized Default Rate (%)", "Equity St. Deviation",
     "Junior OC cushion", "IDT Cushion", "Caa %", "CCC % (S&P)", "Bond %",
     "Cov-Lite %", "WA loans Price", "Avg Col Quality Test/ Trigger %", "WAS/WARF",
     "% of collateral rated B3", "MV NAV (Equity)", "WAS", "Annualized Eq Rt (%)",
-    "Deal Count", "AUM"
+    "Deal Count", "AUM", "Price < 80%", "Price < 70%"
 ]
 
 PERCENTAGE_METRICS = {
@@ -67,7 +52,7 @@ DEFAULT_RISK_COLS = [
     "Diversity", "Annualized Default Rate (%)", "Equity St. Deviation",
     "Junior OC cushion", "IDT Cushion", "Caa %", "CCC % (S&P)", "Bond %",
     "Cov-Lite %", "WA loans Price", "Avg Col Quality Test/ Trigger %", "WAS/WARF",
-    "% of collateral rated B3", "MV NAV (Equity)"
+    "% of collateral rated B3", "MV NAV (Equity)", "Price < 80%", "Price < 70%"
 ]
 DEFAULT_REWARD_COLS = ["WAS", "Annualized Eq Rt (%)"]
 
@@ -78,31 +63,60 @@ DEFAULT_RISK_INVERTS = {
     "Junior OC cushion": True, "IDT Cushion": True, "Caa %": False,
     "CCC % (S&P)": False, "Bond %": False, "Cov-Lite %": False,
     "WA loans Price": True, "Avg Col Quality Test/ Trigger %": True,
-    "% of collateral rated B3": False, "MV NAV (Equity)": True, "WAS/WARF": True
+    "% of collateral rated B3": False, "MV NAV (Equity)": True, "WAS/WARF": True,
+    "Price < 80%": False, "Price < 70%": False
 }
 DEFAULT_REWARD_INVERTS = {c: False for c in DEFAULT_REWARD_COLS}
 
 BASE_METRICS = DEFAULT_RISK_COLS + DEFAULT_REWARD_COLS + ["Deal Count", "AUM"]
 
-# ───────────────────────────────────────────────────────────────────────────────
-# CSV reading (semicolon only) + header sniff + dedup headers
-# ───────────────────────────────────────────────────────────────────────────────
-HEADER_PATTERNS = [r'^\s*Manager\s*Name\s*;']  # strict semicolon CSVs
+TARGET_STOP_COL = "Price < 70%"  # ← we will trim columns to this (inclusive)
 
+# ───────── CSV reading (semicolon only) ─────────
 def _detect_header_index_semicolon(text: str) -> int:
     lines = text.splitlines()
     # Prefer exact "Manager Name;" line
     for i, line in enumerate(lines):
-        if re.search(HEADER_PATTERNS[0], line, flags=re.IGNORECASE):
+        if re.search(r'^\s*Manager\s*Name\s*;', line, flags=re.IGNORECASE):
             return i
-    # Fallback: line containing Manager Name with MOST semicolons
+    # Fallback: line with "Manager Name" and MOST semicolons
     cands = [(i, line.count(';')) for i, line in enumerate(lines) if "Manager Name" in line]
     if cands:
         return sorted(cands, key=lambda x: x[1], reverse=True)[0][0]
-    raise ValueError("Could not locate a semicolon-delimited header containing 'Manager Name;'.")
+    # Last resort: first line with our TARGET_STOP_COL
+    for i, line in enumerate(lines):
+        if TARGET_STOP_COL in line and line.count(';') >= 1:
+            return i
+    raise ValueError("Could not locate a header row (no 'Manager Name;' or target column).")
+
+def _dedup_columns(cols):
+    seen = {}
+    uniq = []
+    for c in cols:
+        if c not in seen:
+            seen[c] = 0
+            uniq.append(c)
+        else:
+            seen[c] += 1
+            uniq.append(f"{c}.{seen[c]}")
+    return uniq
+
+def _trim_until_target(df: pd.DataFrame, target: str) -> pd.DataFrame:
+    """
+    Keep columns from the left up to and including 'target'.
+    If duplicates exist (e.g., 'Price < 70%', 'Price < 70%.1'), we use the first match.
+    """
+    # find first exact match or a deduped variant starting with target
+    target_candidates = [c for c in df.columns if c == target or c.startswith(f"{target}.")]
+    if not target_candidates:
+        # if not present, we don't trim (we keep all columns)
+        return df
+    target_col = target_candidates[0]
+    idx = list(df.columns).index(target_col)
+    keep_cols = list(df.columns)[: idx + 1]
+    return df.loc[:, keep_cols]
 
 def _read_semicolon_manager_csv(uploaded_file) -> pd.DataFrame:
-    # Read bytes once, decode with UTF-8 → Latin-1 fallback
     raw = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
     try:
         text = raw.decode("utf-8")
@@ -115,45 +129,34 @@ def _read_semicolon_manager_csv(uploaded_file) -> pd.DataFrame:
     sio = io.StringIO(text)
     df = pd.read_csv(sio, sep=';', header=header_idx, decimal=',', engine="python")
 
-    # Normalize whitespace in headers
+    # Normalize headers: collapse spaces and dedup
     df.columns = [re.sub(r"\s+", " ", c).strip() for c in df.columns]
+    df.columns = _dedup_columns(df.columns)
 
-    # Deduplicate duplicate headers → "WAS", "WAS.1", "WAS.2", ...
-    seen = {}
-    uniq = []
-    for c in df.columns:
-        if c not in seen:
-            seen[c] = 0
-            uniq.append(c)
-        else:
-            seen[c] += 1
-            uniq.append(f"{c}.{seen[c]}")
-    df.columns = uniq
-
-    # Drop fully empty columns (common with trailing separators)
+    # Drop fully empty columns
     empty_cols = [c for c in df.columns if df[c].isna().all()]
     if empty_cols:
         df = df.drop(columns=empty_cols)
 
-    # Keep only rows with a non-empty Manager Name (pick the first matching column if duplicates)
+    # Trim to the left until (and including) TARGET_STOP_COL
+    df = _trim_until_target(df, TARGET_STOP_COL)
+
+    # Keep only rows with a non-empty Manager Name (choose first matching col name)
     mcols = [c for c in df.columns if c == "Manager Name" or c.startswith("Manager Name.")]
-    if not mcols:
-        raise ValueError("Missing 'Manager Name' column after parsing.")
-    mcol = mcols[0]
-    df = df[~df[mcol].isna() & (df[mcol].astype(str).str.strip() != "")]
-    if mcol != "Manager Name":
-        df = df.rename(columns={mcol: "Manager Name"})
+    if mcols:
+        mcol = mcols[0]
+        df = df[~df[mcol].isna() & (df[mcol].astype(str).str.strip() != "")]
+        if mcol != "Manager Name":
+            df = df.rename(columns={mcol: "Manager Name"})
+    # If no Manager Name present, we still proceed with trimmed df.
 
     return df.reset_index(drop=True)
 
-# ───────────────────────────────────────────────────────────────────────────────
-# Cleaning & scaling helpers (robust / scalar-safe)
-# ───────────────────────────────────────────────────────────────────────────────
+# ───────── Cleaning & scaling helpers ─────────
 def clean_european_number(value):
     if pd.isna(value) or value == '':
         return 0.0
     if isinstance(value, str):
-        # remove spaces and thousand dots, then use comma as decimal
         value = value.strip().replace(' ', '').replace('.', '').replace(',', '.')
     try:
         return float(value)
@@ -162,7 +165,6 @@ def clean_european_number(value):
 
 def clean_numeric(value, is_manager_name=False):
     import numpy as np
-    # If a Series/array slips in (e.g., from duplicated columns), reduce to a scalar
     if isinstance(value, (pd.Series, list, tuple, np.ndarray)):
         s = pd.Series(value).dropna()
         value = s.iloc[0] if not s.empty else np.nan
@@ -177,29 +179,20 @@ def clean_numeric(value, is_manager_name=False):
         if v == "":
             return 0.0
         if '%' in v:
-            num = v.replace('%', '')
-            num = num.replace('.', '').replace(',', '.')
-            try:
-                return float(num) / 100.0
-            except Exception:
-                return 0.0
+            num = v.replace('%', '').replace('.', '').replace(',', '.')
+            try: return float(num) / 100.0
+            except Exception: return 0.0
         v2 = v.replace('.', '').replace(',', '.')
-        try:
-            return float(v2)
-        except Exception:
-            return 0.0
-    try:
-        return float(value)
-    except Exception:
-        return 0.0
+        try: return float(v2)
+        except Exception: return 0.0
+    try: return float(value)
+    except Exception: return 0.0
 
 def safe_min_max_scale(series: pd.Series, invert: bool = False) -> pd.Series:
     s = pd.to_numeric(series, errors='coerce').fillna(0.0)
     mn, mx = float(s.min()), float(s.max())
-    if invert:
-        s = (mx - s) + mn
-    if mx == mn:
-        return pd.Series(np.full(len(s), 0.5), index=s.index)
+    if invert: s = (mx - s) + mn
+    if mx == mn: return pd.Series(np.full(len(s), 0.5), index=s.index)
     return ((s - mn) / (mx - mn)).round(6)
 
 def calculate_bubble_size(deal_count, aum):
@@ -217,15 +210,12 @@ def get_current_metric_types():
     reward_cols = st.session_state.get('custom_reward_cols', DEFAULT_REWARD_COLS.copy())
     return risk_cols, reward_cols
 
-# ───────────────────────────────────────────────────────────────────────────────
-# Core scoring
-# ───────────────────────────────────────────────────────────────────────────────
+# ───────── Scoring ─────────
 def calculate_scores(df: pd.DataFrame, risk_weights: dict, reward_weights: dict) -> pd.DataFrame:
     df = df.copy()
     risk_cols, reward_cols = get_current_metric_types()
     excluded = st.session_state.get("excluded_managers", set())
-
-    working_df = df[~df["Manager Name"].isin(excluded)].copy()
+    working_df = df if "Manager Name" not in df.columns else df[~df["Manager Name"].isin(excluded)].copy()
 
     # Risk
     risk_num, risk_den = 0, 0.0
@@ -247,24 +237,24 @@ def calculate_scores(df: pd.DataFrame, risk_weights: dict, reward_weights: dict)
             rew_den += w
     working_df["Reward_Score"] = (rew_num / rew_den) if rew_den > 0 else 0.5
 
-    # Average & bubbles
     working_df["Average_Score"] = ((1 - working_df["Risk_Score"]) + working_df["Reward_Score"]) / 2
+
     if "Deal Count" in working_df.columns and "AUM" in working_df.columns:
         working_df["Bubble_Size"] = calculate_bubble_size(working_df["Deal Count"], working_df["AUM"])
     else:
         working_df["Bubble_Size"] = 30
 
-    on_cols = ["Manager Name"] + (["Year"] if "Year" in df.columns else [])
-    df = df.merge(
-        working_df[on_cols + ["Risk_Score", "Reward_Score", "Average_Score", "Bubble_Size"]],
-        on=on_cols,
-        how="left"
-    )
+    on_cols = (["Manager Name"] if "Manager Name" in df.columns else []) + (["Year"] if "Year" in df.columns else [])
+    if on_cols:
+        df = df.merge(
+            working_df[on_cols + ["Risk_Score", "Reward_Score", "Average_Score", "Bubble_Size"]],
+            on=on_cols, how="left"
+        )
+    else:
+        df[["Risk_Score","Reward_Score","Average_Score","Bubble_Size"]] = working_df[["Risk_Score","Reward_Score","Average_Score","Bubble_Size"]]
     return df
 
-# ───────────────────────────────────────────────────────────────────────────────
-# UI blocks
-# ───────────────────────────────────────────────────────────────────────────────
+# ───────── UI blocks ─────────
 def metric_type_editor():
     st.sidebar.header("🔀 Metric Type Configuration")
     risk_cols, reward_cols = get_current_metric_types()
@@ -274,85 +264,51 @@ def metric_type_editor():
     with st.sidebar.expander("Change Metric Types"):
         st.write("**Current Risk Metrics:**")
         for metric in list(risk_cols):
-            cols = st.columns([4, 1])
-            cols[0].write(metric)
+            cols = st.columns([4, 1]); cols[0].write(metric)
             if cols[1].button("➡️ Reward", key=f"risk_to_reward_{metric}"):
-                risk_cols.remove(metric)
-                reward_cols.append(metric)
-                st.session_state.custom_risk_cols = risk_cols
-                st.session_state.custom_reward_cols = reward_cols
+                risk_cols.remove(metric); reward_cols.append(metric)
+                st.session_state.custom_risk_cols = risk_cols; st.session_state.custom_reward_cols = reward_cols
                 st.rerun()
-
         st.write("**Current Reward Metrics:**")
         for metric in list(reward_cols):
-            cols = st.columns([4, 1])
-            cols[0].write(metric)
+            cols = st.columns([4, 1]); cols[0].write(metric)
             if cols[1].button("⬅️ Risk", key=f"reward_to_risk_{metric}"):
-                reward_cols.remove(metric)
-                risk_cols.append(metric)
-                st.session_state.custom_risk_cols = risk_cols
-                st.session_state.custom_reward_cols = reward_cols
+                reward_cols.remove(metric); risk_cols.append(metric)
+                st.session_state.custom_risk_cols = risk_cols; st.session_state.custom_reward_cols = reward_cols
                 st.rerun()
-
         if candidates:
             st.write("**Available Metrics:**")
             for metric in candidates:
-                cols = st.columns([3, 1, 1])
-                cols[0].write(metric)
+                cols = st.columns([3, 1, 1]); cols[0].write(metric)
                 if cols[1].button("➕Risk", key=f"add_risk_{metric}"):
-                    risk_cols.append(metric)
-                    st.session_state.custom_risk_cols = risk_cols
-                    st.rerun()
+                    risk_cols.append(metric); st.session_state.custom_risk_cols = risk_cols; st.rerun()
                 if cols[2].button("➕Reward", key=f"add_reward_{metric}"):
-                    reward_cols.append(metric)
-                    st.session_state.custom_reward_cols = reward_cols
-                    st.rerun()
+                    reward_cols.append(metric); st.session_state.custom_reward_cols = reward_cols; st.rerun()
 
 def metric_editor(df):
     st.header("✏️ Manager Metrics Editor")
-
-    if 'df_clean' not in st.session_state:
-        st.warning("Please upload a file first")
-        return
-    if 'editable_df' not in st.session_state:
-        st.session_state.editable_df = st.session_state.df_clean.copy()
+    if 'df_clean' not in st.session_state: st.warning("Please upload a file first"); return
+    if 'editable_df' not in st.session_state: st.session_state.editable_df = st.session_state.df_clean.copy()
+    if "Manager Name" not in st.session_state.editable_df.columns:
+        st.info("No 'Manager Name' column found. Editing disabled for this file."); return
 
     managers = st.session_state.editable_df["Manager Name"].dropna().unique()
-    if len(managers) == 0:
-        st.warning("No managers found.")
-        return
+    if len(managers) == 0: st.warning("No managers found."); return
 
     selected_manager = st.selectbox("Select a manager", managers, key="manager_select")
-    manager_idx = st.session_state.editable_df[
-        st.session_state.editable_df["Manager Name"] == selected_manager
-    ].index[0]
-
+    manager_idx = st.session_state.editable_df[st.session_state.editable_df["Manager Name"] == selected_manager].index[0]
     st.markdown(f"### Editing: **{selected_manager}**")
 
-    cols = st.columns(3)
-    current_col = 0
-    modifications = {}
-
+    cols = st.columns(3); current_col = 0; modifications = {}
     for col in [c for c in BASE_METRICS if c in st.session_state.editable_df.columns]:
         with cols[current_col]:
-            raw_val = st.session_state.editable_df.at[manager_idx, col]
-            num_val = pd.to_numeric(raw_val, errors='coerce')
-            current_val = 0.0 if pd.isna(num_val) else float(num_val)
-
+            raw = st.session_state.editable_df.at[manager_idx, col]
+            num = pd.to_numeric(raw, errors='coerce'); current_val = 0.0 if pd.isna(num) else float(num)
             if col in PERCENTAGE_METRICS:
-                new_val = st.number_input(
-                    f"{col} (%)",
-                    value=float(current_val * 100.0),
-                    min_value=0.0,
-                    max_value=100.0,
-                    step=0.1,
-                    key=f"edit_{col}_{selected_manager}"
-                )
+                new_val = st.number_input(f"{col} (%)", value=float(current_val * 100.0), min_value=0.0, max_value=100.0, step=0.1, key=f"edit_{col}_{selected_manager}")
                 modifications[col] = new_val / 100.0
             else:
-                new_val = st.number_input(
-                    col, value=float(current_val), step=0.1, key=f"edit_{col}_{selected_manager}"
-                )
+                new_val = st.number_input(col, value=float(current_val), step=0.1, key=f"edit_{col}_{selected_manager}")
                 modifications[col] = new_val
         current_col = (current_col + 1) % 3
 
@@ -360,82 +316,58 @@ def metric_editor(df):
         try:
             for c, v in modifications.items():
                 st.session_state.editable_df.at[manager_idx, c] = v
-
             risk_cols, reward_cols = get_current_metric_types()
             affected = set(modifications.keys()) & set(risk_cols + reward_cols)
             for col in affected:
-                invert = st.session_state.get(
-                    f"invert_{col}",
-                    DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols else DEFAULT_REWARD_INVERTS.get(col, False)
-                )
+                invert = st.session_state.get(f"invert_{col}", DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols else DEFAULT_REWARD_INVERTS.get(col, False))
                 if "Year" in st.session_state.editable_df.columns:
-                    st.session_state.editable_df[f"Scaled_{col}"] = (
-                        st.session_state.editable_df
-                        .groupby("Year")[col]
-                        .transform(lambda s: safe_min_max_scale(s, invert))
-                    )
+                    st.session_state.editable_df[f"Scaled_{col}"] = st.session_state.editable_df.groupby("Year")[col].transform(lambda s: safe_min_max_scale(s, invert))
                 else:
-                    st.session_state.editable_df[f"Scaled_{col}"] = safe_min_max_scale(
-                        st.session_state.editable_df[col], invert
-                    )
-
+                    st.session_state.editable_df[f"Scaled_{col}"] = safe_min_max_scale(st.session_state.editable_df[col], invert)
             risk_weights = {c: st.session_state.get(f'risk_{c}', 1.0) for c in risk_cols}
             reward_weights = {c: st.session_state.get(f'reward_{c}', 1.0) for c in reward_cols}
-            updated_df = calculate_scores(st.session_state.editable_df, risk_weights, reward_weights)
-
-            st.session_state.df_clean = updated_df.copy()
-            st.session_state.editable_df = updated_df.copy()
-            st.session_state.last_update = time.time()
+            updated = calculate_scores(st.session_state.editable_df, risk_weights, reward_weights)
+            st.session_state.df_clean = updated.copy(); st.session_state.editable_df = updated.copy(); st.session_state.last_update = time.time()
             st.success("Changes saved successfully!")
         except Exception as e:
             st.error(f"Error: {str(e)}")
 
 def manager_selection_interface():
     st.header("👥 Manager Selection")
-    if 'df_clean' not in st.session_state:
-        st.warning("Please upload data first")
-        return
+    if 'df_clean' not in st.session_state: st.warning("Please upload data first"); return
+    if "Manager Name" not in st.session_state.df_clean.columns:
+        st.info("No 'Manager Name' column found. Selection disabled for this file."); return
 
     all_managers = st.session_state.df_clean["Manager Name"].dropna().unique()
-
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Hide from Visualization")
         st.markdown("<div class='manager-list'>", unsafe_allow_html=True)
-        hidden = st.session_state.get("hidden_managers", set())
-        new_hidden = set()
+        hidden = st.session_state.get("hidden_managers", set()); new_hidden = set()
         for m in all_managers:
-            if st.checkbox(f"Hide {m}", value=(m in hidden), key=f"hide_{m}"):
-                new_hidden.add(m)
+            if st.checkbox(f"Hide {m}", value=(m in hidden), key=f"hide_{m}"): new_hidden.add(m)
         st.session_state.hidden_managers = new_hidden
         st.markdown("</div>", unsafe_allow_html=True)
-
     with col2:
         st.subheader("Exclude from Calculations")
         st.markdown("<div class='manager-list'>", unsafe_allow_html=True)
-        excluded = st.session_state.get("excluded_managers", set())
-        new_excluded = set()
+        excluded = st.session_state.get("excluded_managers", set()); new_excluded = set()
         for m in all_managers:
-            if st.checkbox(f"Exclude {m}", value=(m in excluded), key=f"exclude_{m}"):
-                new_excluded.add(m)
+            if st.checkbox(f"Exclude {m}", value=(m in excluded), key=f"exclude_{m}"): new_excluded.add(m)
         st.session_state.excluded_managers = new_excluded
         st.markdown("</div>", unsafe_allow_html=True)
 
-# ───────────────────────────────────────────────────────────────────────────────
-# Data loading (semicolon CSVs only)
-# ───────────────────────────────────────────────────────────────────────────────
+# ───────── Data loading (semicolon CSVs only, trim at TARGET_STOP_COL) ─────────
 def load_data():
     st.sidebar.header("📤 Data Upload")
     uploaded_files = st.sidebar.file_uploader(
-        "Upload your semicolon (;) CSV files",
-        type=["csv"],
-        accept_multiple_files=True,
-        help="Preamble rows allowed. The app auto-detects the true header. Only ';' CSVs are supported."
+        f"Upload your semicolon (;) CSV files — columns to the right of '{TARGET_STOP_COL}' are ignored",
+        type=["csv"], accept_multiple_files=True,
+        help=f"Preamble rows allowed. The app auto-detects the true header and keeps columns only up to '{TARGET_STOP_COL}'."
     )
-    if not uploaded_files:
-        return None
+    if not uploaded_files: return None
 
-    all_frames = []
+    frames = []
     for uploaded_file in uploaded_files:
         try:
             df = _read_semicolon_manager_csv(uploaded_file)
@@ -449,30 +381,28 @@ def load_data():
                 df["Year"] = pd.to_numeric(df["Year"], errors='coerce').fillna(year).astype(int)
 
             # Cleaning
-            df["Manager Name"] = df["Manager Name"].apply(clean_numeric, is_manager_name=True)
+            if "Manager Name" in df.columns:
+                df["Manager Name"] = df["Manager Name"].apply(clean_numeric, is_manager_name=True)
             for c in [c for c in df.columns if c not in ["Manager Name", "Year"]]:
                 df[c] = df[c].apply(clean_numeric)
 
-            all_frames.append(df)
+            frames.append(df)
         except Exception as e:
             st.sidebar.error(f"Loading error for {uploaded_file.name}: {str(e)}")
             return None
 
-    if not all_frames:
-        return None
+    if not frames: return None
 
-    df_all = pd.concat(all_frames, ignore_index=True)
+    df_all = pd.concat(frames, ignore_index=True)
     st.session_state.df_raw = df_all.copy()
     st.session_state.df_clean = df_all.copy()
     st.session_state.file_uploaded = True
     st.session_state.hidden_managers = set()
     st.session_state.excluded_managers = set()
-    st.sidebar.success("Files loaded successfully!")
+    st.sidebar.success("Files loaded successfully! (Columns after '%s' were ignored.)" % TARGET_STOP_COL)
     return df_all
 
-# ───────────────────────────────────────────────────────────────────────────────
-# Main app
-# ───────────────────────────────────────────────────────────────────────────────
+# ───────── Main app ─────────
 def main():
     if 'file_uploaded' not in st.session_state:
         st.session_state.file_uploaded = False
@@ -482,17 +412,15 @@ def main():
     if not st.session_state.file_uploaded:
         df = load_data()
         if df is None:
-            st.info("Upload at least one semicolon CSV to get started.")
+            st.info(f"Upload at least one semicolon CSV (columns after '{TARGET_STOP_COL}' will be ignored).")
             return
 
-    if 'df_clean' not in st.session_state or "Manager Name" not in st.session_state.df_clean.columns:
-        st.warning("Please upload a valid semicolon CSV containing a 'Manager Name' header.")
-        return
+    if 'df_clean' not in st.session_state:
+        st.warning("Please upload a valid semicolon CSV."); return
 
     # Reset
     if st.session_state.file_uploaded and st.sidebar.button("🔄 Reset"):
-        st.session_state.clear()
-        st.rerun()
+        st.session_state.clear(); st.rerun()
 
     # Inversion controls
     st.sidebar.header("🔄 Metric Inversion")
@@ -517,8 +445,7 @@ def main():
         for col in risk_cols:
             if col in st.session_state.df_clean.columns:
                 k = f'risk_{col}'
-                if k not in st.session_state:
-                    st.session_state[k] = 1.0
+                if k not in st.session_state: st.session_state[k] = 1.0
                 st.session_state[k] = st.slider(f"{col}", 0.0, 2.0, st.session_state[k], 0.1, key=f"risk_slider_{col}")
                 risk_weights[col] = st.session_state[k]
     with st.sidebar.expander("Reward Weights"):
@@ -526,22 +453,16 @@ def main():
         for col in reward_cols:
             if col in st.session_state.df_clean.columns:
                 k = f'reward_{col}'
-                if k not in st.session_state:
-                    st.session_state[k] = 1.0
+                if k not in st.session_state: st.session_state[k] = 1.0
                 st.session_state[k] = st.slider(f"{col}", 0.0, 2.0, st.session_state[k], 0.1, key=f"reward_slider_{col}")
                 reward_weights[col] = st.session_state[k]
 
     # Scaling with inversion
     for col in set(risk_cols + reward_cols):
         if col in st.session_state.df_clean.columns:
-            invert = st.session_state.get(
-                f"invert_{col}",
-                DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols else DEFAULT_REWARD_INVERTS.get(col, False)
-            )
+            invert = st.session_state.get(f"invert_{col}", DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols else DEFAULT_REWARD_INVERTS.get(col, False))
             if "Year" in st.session_state.df_clean.columns:
-                st.session_state.df_clean[f"Scaled_{col}"] = (
-                    st.session_state.df_clean.groupby("Year")[col].transform(lambda s: safe_min_max_scale(s, invert))
-                )
+                st.session_state.df_clean[f"Scaled_{col}"] = st.session_state.df_clean.groupby("Year")[col].transform(lambda s: safe_min_max_scale(s, invert))
             else:
                 st.session_state.df_clean[f"Scaled_{col}"] = safe_min_max_scale(st.session_state.df_clean[col], invert)
 
@@ -550,45 +471,48 @@ def main():
 
     # Tabs
     tab1, tab2, tab3 = st.tabs(["📊 Visualization", "👥 Manager Selection", "✏️ Edit Metrics"])
-
     with tab1:
         st.header("Risk-Reward Matrix")
-        hidden = st.session_state.get("hidden_managers", set())
-        filtered_df = current_df[~current_df["Manager Name"].isin(hidden)].copy()
+        filtered_df = current_df.copy()
+        if "Manager Name" in filtered_df.columns:
+            hidden = st.session_state.get("hidden_managers", set())
+            filtered_df = filtered_df[~filtered_df["Manager Name"].isin(hidden)]
 
-        highlighted = st.multiselect("Highlight managers", filtered_df["Manager Name"].unique(), max_selections=4)
-        filtered_df["Highlight"] = np.where(filtered_df["Manager Name"].isin(highlighted),
-                                            filtered_df["Manager Name"], "Other")
+        highlighted = st.multiselect("Highlight managers", filtered_df["Manager Name"].unique() if "Manager Name" in filtered_df.columns else [], max_selections=4)
+        if "Manager Name" in filtered_df.columns:
+            filtered_df["Highlight"] = np.where(filtered_df["Manager Name"].isin(highlighted), filtered_df["Manager Name"], "Other")
+        else:
+            filtered_df["Highlight"] = "Other"
 
         palette = px.colors.qualitative.Bold
         color_map = {m: palette[i % len(palette)] for i, m in enumerate(highlighted)}
         color_map["Other"] = "#CCCCCC"
 
-        scatter_args = dict(
-            x="Risk_Score", y="Reward_Score", size="Bubble_Size",
-            color="Highlight", hover_name="Manager Name",
-            hover_data={"Risk_Score":":.3f","Reward_Score":":.3f","Average_Score":":.3f","Deal Count":True,"AUM":":,.0f"},
+        args = dict(
+            x="Risk_Score", y="Reward_Score", size="Bubble_Size", color="Highlight",
+            hover_name="Manager Name" if "Manager Name" in filtered_df.columns else None,
+            hover_data={"Risk_Score":":.3f","Reward_Score":":.3f","Average_Score":":.3f","Deal Count":True if "Deal Count" in filtered_df.columns else False,"AUM":":,.0f" if "AUM" in filtered_df.columns else False},
             size_max=40, color_discrete_map=color_map
         )
-        if "Year" in filtered_df.columns:
-            scatter_args["animation_frame"] = "Year"
+        if "Year" in filtered_df.columns: args["animation_frame"] = "Year"
 
-        fig = px.scatter(filtered_df, **scatter_args)
-        fig.update_layout(
-            xaxis_range=[-0.1, 1.1], yaxis_range=[-0.1, 1.1],
-            height=600, plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#333"), margin=dict(l=20, r=20, t=40, b=20)
-        )
+        fig = px.scatter(filtered_df, **args)
+        fig.update_layout(xaxis_range=[-0.1,1.1], yaxis_range=[-0.1,1.1], height=600,
+                          plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                          font=dict(color="#333"), margin=dict(l=20,r=20,t=40,b=20))
         st.plotly_chart(fig, use_container_width=True)
 
         with st.expander("Detailed Metrics Table", expanded=False):
-            table_df = (filtered_df.set_index(["Year","Manager Name"])
-                        if "Year" in filtered_df.columns else filtered_df.set_index("Manager Name"))
+            if "Year" in filtered_df.columns and "Manager Name" in filtered_df.columns:
+                table_df = filtered_df.set_index(["Year","Manager Name"])
+            elif "Manager Name" in filtered_df.columns:
+                table_df = filtered_df.set_index("Manager Name")
+            else:
+                table_df = filtered_df
             st.dataframe(table_df, use_container_width=True)
 
     with tab2:
         manager_selection_interface()
-
     with tab3:
         metric_editor(current_df)
 
@@ -604,56 +528,16 @@ def main():
                 export_cols = ["Manager Name","Year","Risk_Score","Reward_Score","Average_Score","Bubble_Size"]
                 export_cols += [c for c in risk_cols if c in current_df.columns]
                 export_cols += [c for c in reward_cols if c in current_df.columns]
-                export_cols += [c for c in ["Deal Count","AUM"] if c in current_df.columns]
+                export_cols += [c for c in ["Deal Count","AUM", "Price < 80%", "Price < 70%"] if c in current_df.columns]
 
                 export_df = current_df[[c for c in export_cols if c in current_df.columns]].copy()
 
                 csv_path = f"output/manager_scores_{ts}.csv"
                 xlsx_path = f"output/manager_scores_{ts}.xlsx"
-
                 export_df.to_csv(csv_path, index=False, sep=";", decimal=",")
 
                 with pd.ExcelWriter(xlsx_path) as writer:
                     export_df.to_excel(writer, sheet_name="Scores", index=False)
-
-                    selections_df = pd.DataFrame({
-                        "Manager": current_df["Manager Name"],
-                        "Hidden": current_df["Manager Name"].isin(st.session_state.get("hidden_managers", set())),
-                        "Excluded": current_df["Manager Name"].isin(st.session_state.get("excluded_managers", set()))
-                    })
-                    selections_df.to_excel(writer, sheet_name="Manager Selections", index=False)
-
-                    metric_types_df = pd.DataFrame({
-                        "Metric": [*risk_cols, *reward_cols],
-                        "Type": ["Risk"]*len(risk_cols) + ["Reward"]*len(reward_cols),
-                        "Default Inverted": [
-                            DEFAULT_RISK_INVERTS.get(c, False) if c in DEFAULT_RISK_COLS else DEFAULT_REWARD_INVERTS.get(c, False)
-                            for c in [*risk_cols, *reward_cols]
-                        ]
-                    })
-                    metric_types_df.to_excel(writer, sheet_name="Metric Types", index=False)
-
-                    inversion_df = pd.DataFrame([
-                        {
-                            "Metric": c,
-                            "Inverted": st.session_state.get(
-                                f"invert_{c}",
-                                DEFAULT_RISK_INVERTS.get(c, False) if c in risk_cols else DEFAULT_REWARD_INVERTS.get(c, False)
-                            ),
-                            "Type": "Risk" if c in risk_cols else "Reward"
-                        }
-                        for c in [*risk_cols, *reward_cols]
-                    ])
-                    inversion_df.to_excel(writer, sheet_name="Inversion Settings", index=False)
-
-                    weights_df = pd.DataFrame({
-                        "Metric": [*risk_cols, *reward_cols],
-                        "Weight": [st.session_state.get(f'risk_{c}', 1.0) for c in risk_cols] +
-                                  [st.session_state.get(f'reward_{c}', 1.0) for c in reward_cols],
-                        "Type": ["Risk"]*len(risk_cols) + ["Reward"]*len(reward_cols)
-                    })
-                    weights_df.to_excel(writer, sheet_name="Weights", index=False)
-
                 st.sidebar.success("Report generated successfully!")
                 c1, c2 = st.sidebar.columns(2)
                 with c1:
@@ -661,10 +545,8 @@ def main():
                         st.download_button("📥 CSV", f, file_name=os.path.basename(csv_path), mime="text/csv")
                 with c2:
                     with open(xlsx_path, "rb") as f:
-                        st.download_button(
-                            "📊 Excel", f, file_name=os.path.basename(xlsx_path),
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+                        st.download_button("📊 Excel", f, file_name=os.path.basename(xlsx_path),
+                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             except Exception as e:
                 st.sidebar.error(f"Export error: {str(e)}")
 
