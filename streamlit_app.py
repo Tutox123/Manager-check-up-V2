@@ -10,7 +10,7 @@ import streamlit as st
 from locale import setlocale, LC_NUMERIC
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Locale (best-effort; not critical)
+# Locale (best-effort, not critical)
 # ───────────────────────────────────────────────────────────────────────────────
 try:
     setlocale(LC_NUMERIC, 'en_US.UTF-8')
@@ -30,30 +30,19 @@ st.set_page_config(
 )
 
 st.markdown("""
-    <style>
-        .stApp { font-family: 'Helvetica Neue', Arial, sans-serif; color: #333333; }
-        h1, h2, h3 {
-            color: #2c3e50; font-weight: 600; border-bottom: 1px solid #e0e0e0; padding-bottom: 0.3em;
-        }
-        .manager-list {
-            max-height: 400px; overflow-y: auto; border: 1px solid #e0e0e0;
-            padding: 10px; border-radius: 4px;
-        }
-        .stButton>button {
-            background-color: #2c3e50; color: white; border-radius: 4px; border: none;
-            padding: 0.5em 1em; font-weight: 500;
-        }
-        .stButton>button:hover { background-color: #1a2634; }
-    </style>
+<style>
+  .stApp { font-family: 'Helvetica Neue', Arial, sans-serif; color: #333; }
+  h1, h2, h3 { color: #2c3e50; font-weight: 600; border-bottom: 1px solid #e0e0e0; padding-bottom: .3em; }
+  .manager-list { max-height: 400px; overflow-y: auto; border: 1px solid #e0e0e0; padding: 10px; border-radius: 4px; }
+  .stButton>button { background-color: #2c3e50; color: #fff; border: none; border-radius: 4px; padding: .5em 1em; font-weight: 500; }
+  .stButton>button:hover { background-color: #1a2634; }
+</style>
 """, unsafe_allow_html=True)
 
-st.markdown(
-    "<h1 style='text-align: center; margin-bottom: 1em;'>Manager Risk-Reward Analysis</h1>",
-    unsafe_allow_html=True
-)
+st.markdown("<h1 style='text-align:center;margin-bottom:1em;'>Manager Risk-Reward Analysis</h1>", unsafe_allow_html=True)
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Constants & defaults
+# Constants / defaults
 # ───────────────────────────────────────────────────────────────────────────────
 ALL_METRICS = [
     "WARF", "Caa/CCC Calculated %", "Defaulted %", "Largest industry concentration %",
@@ -96,31 +85,24 @@ DEFAULT_REWARD_INVERTS = {c: False for c in DEFAULT_REWARD_COLS}
 BASE_METRICS = DEFAULT_RISK_COLS + DEFAULT_REWARD_COLS + ["Deal Count", "AUM"]
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Helpers — parsing, cleaning, scaling
+# CSV reading (semicolon only) + header sniff + dedup headers
 # ───────────────────────────────────────────────────────────────────────────────
-HEADER_PATTERNS = [
-    r'^\s*Manager\s*Name\s*;',   # exact semicolon files only
-    r'^\s*Manager\s*Name\s*$'
-]
+HEADER_PATTERNS = [r'^\s*Manager\s*Name\s*;']  # strict semicolon CSVs
 
 def _detect_header_index_semicolon(text: str) -> int:
     lines = text.splitlines()
-    # Prefer an exact "Manager Name;" header line (semicolon CSV)
+    # Prefer exact "Manager Name;" line
     for i, line in enumerate(lines):
         if re.search(HEADER_PATTERNS[0], line, flags=re.IGNORECASE):
             return i
-    # Fallback: contains Manager Name and the most semicolons
-    candidates = []
-    for i, line in enumerate(lines):
-        if "Manager Name" in line:
-            candidates.append((i, line.count(';')))
-    if candidates:
-        # choose the line with the MOST semicolons
-        return sorted(candidates, key=lambda x: x[1], reverse=True)[0][0]
+    # Fallback: line containing Manager Name with MOST semicolons
+    cands = [(i, line.count(';')) for i, line in enumerate(lines) if "Manager Name" in line]
+    if cands:
+        return sorted(cands, key=lambda x: x[1], reverse=True)[0][0]
     raise ValueError("Could not locate a semicolon-delimited header containing 'Manager Name;'.")
 
 def _read_semicolon_manager_csv(uploaded_file) -> pd.DataFrame:
-    # Read once and decode (UTF-8 then Latin-1 as fallback)
+    # Read bytes once, decode with UTF-8 → Latin-1 fallback
     raw = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
     try:
         text = raw.decode("utf-8")
@@ -129,30 +111,49 @@ def _read_semicolon_manager_csv(uploaded_file) -> pd.DataFrame:
 
     header_idx = _detect_header_index_semicolon(text)
 
-    # We enforce semicolon CSV with European decimal comma
+    # Parse strict semicolon CSV with EU decimal comma
     sio = io.StringIO(text)
-    df = pd.read_csv(
-        sio,
-        sep=';',
-        header=header_idx,
-        decimal=',',
-        engine="python"
-    )
+    df = pd.read_csv(sio, sep=';', header=header_idx, decimal=',', engine="python")
 
-    # Normalize column names
+    # Normalize whitespace in headers
     df.columns = [re.sub(r"\s+", " ", c).strip() for c in df.columns]
 
-    # Keep only rows with a non-empty Manager Name
-    if "Manager Name" not in df.columns:
+    # Deduplicate duplicate headers → "WAS", "WAS.1", "WAS.2", ...
+    seen = {}
+    uniq = []
+    for c in df.columns:
+        if c not in seen:
+            seen[c] = 0
+            uniq.append(c)
+        else:
+            seen[c] += 1
+            uniq.append(f"{c}.{seen[c]}")
+    df.columns = uniq
+
+    # Drop fully empty columns (common with trailing separators)
+    empty_cols = [c for c in df.columns if df[c].isna().all()]
+    if empty_cols:
+        df = df.drop(columns=empty_cols)
+
+    # Keep only rows with a non-empty Manager Name (pick the first matching column if duplicates)
+    mcols = [c for c in df.columns if c == "Manager Name" or c.startswith("Manager Name.")]
+    if not mcols:
         raise ValueError("Missing 'Manager Name' column after parsing.")
-    df = df[~df["Manager Name"].isna() & (df["Manager Name"].astype(str).str.strip() != "")]
+    mcol = mcols[0]
+    df = df[~df[mcol].isna() & (df[mcol].astype(str).str.strip() != "")]
+    if mcol != "Manager Name":
+        df = df.rename(columns={mcol: "Manager Name"})
+
     return df.reset_index(drop=True)
 
+# ───────────────────────────────────────────────────────────────────────────────
+# Cleaning & scaling helpers (robust / scalar-safe)
+# ───────────────────────────────────────────────────────────────────────────────
 def clean_european_number(value):
     if pd.isna(value) or value == '':
         return 0.0
     if isinstance(value, str):
-        # remove spaces and thousand dots, then set comma as decimal
+        # remove spaces and thousand dots, then use comma as decimal
         value = value.strip().replace(' ', '').replace('.', '').replace(',', '.')
     try:
         return float(value)
@@ -160,16 +161,33 @@ def clean_european_number(value):
         return 0.0
 
 def clean_numeric(value, is_manager_name=False):
+    import numpy as np
+    # If a Series/array slips in (e.g., from duplicated columns), reduce to a scalar
+    if isinstance(value, (pd.Series, list, tuple, np.ndarray)):
+        s = pd.Series(value).dropna()
+        value = s.iloc[0] if not s.empty else np.nan
+
     if is_manager_name:
-        return str(value).strip()
-    if pd.isna(value) or value == '':
+        return "" if pd.isna(value) else str(value).strip()
+
+    if pd.isna(value):
         return 0.0
     if isinstance(value, str):
         v = value.strip().strip('"').replace(' ', '')
+        if v == "":
+            return 0.0
         if '%' in v:
-            num = clean_european_number(v.replace('%', ''))
-            return num / 100.0
-        return clean_european_number(v)
+            num = v.replace('%', '')
+            num = num.replace('.', '').replace(',', '.')
+            try:
+                return float(num) / 100.0
+            except Exception:
+                return 0.0
+        v2 = v.replace('.', '').replace(',', '.')
+        try:
+            return float(v2)
+        except Exception:
+            return 0.0
     try:
         return float(value)
     except Exception:
@@ -209,7 +227,7 @@ def calculate_scores(df: pd.DataFrame, risk_weights: dict, reward_weights: dict)
 
     working_df = df[~df["Manager Name"].isin(excluded)].copy()
 
-    # Risk scores
+    # Risk
     risk_num, risk_den = 0, 0.0
     for col in risk_cols:
         sc = f"Scaled_{col}"
@@ -219,7 +237,7 @@ def calculate_scores(df: pd.DataFrame, risk_weights: dict, reward_weights: dict)
             risk_den += w
     working_df["Risk_Score"] = (risk_num / risk_den) if risk_den > 0 else 0.5
 
-    # Reward scores
+    # Reward
     rew_num, rew_den = 0, 0.0
     for col in reward_cols:
         sc = f"Scaled_{col}"
@@ -229,8 +247,8 @@ def calculate_scores(df: pd.DataFrame, risk_weights: dict, reward_weights: dict)
             rew_den += w
     working_df["Reward_Score"] = (rew_num / rew_den) if rew_den > 0 else 0.5
 
+    # Average & bubbles
     working_df["Average_Score"] = ((1 - working_df["Risk_Score"]) + working_df["Reward_Score"]) / 2
-
     if "Deal Count" in working_df.columns and "AUM" in working_df.columns:
         working_df["Bubble_Size"] = calculate_bubble_size(working_df["Deal Count"], working_df["AUM"])
     else:
@@ -296,7 +314,6 @@ def metric_editor(df):
     if 'df_clean' not in st.session_state:
         st.warning("Please upload a file first")
         return
-
     if 'editable_df' not in st.session_state:
         st.session_state.editable_df = st.session_state.df_clean.copy()
 
@@ -375,7 +392,6 @@ def metric_editor(df):
 
 def manager_selection_interface():
     st.header("👥 Manager Selection")
-
     if 'df_clean' not in st.session_state:
         st.warning("Please upload data first")
         return
@@ -414,9 +430,8 @@ def load_data():
         "Upload your semicolon (;) CSV files",
         type=["csv"],
         accept_multiple_files=True,
-        help="The app auto-detects the true header even if there are preamble rows. Only ';' CSVs are supported."
+        help="Preamble rows allowed. The app auto-detects the true header. Only ';' CSVs are supported."
     )
-
     if not uploaded_files:
         return None
 
@@ -474,6 +489,7 @@ def main():
         st.warning("Please upload a valid semicolon CSV containing a 'Manager Name' header.")
         return
 
+    # Reset
     if st.session_state.file_uploaded and st.sidebar.button("🔄 Reset"):
         st.session_state.clear()
         st.rerun()
@@ -484,19 +500,11 @@ def main():
     with st.sidebar.expander("Risk Metrics Inversion"):
         for col in risk_cols:
             if col in st.session_state.df_clean.columns:
-                st.checkbox(
-                    f"Invert {col}",
-                    value=DEFAULT_RISK_INVERTS.get(col, False),
-                    key=f"invert_{col}"
-                )
+                st.checkbox(f"Invert {col}", value=DEFAULT_RISK_INVERTS.get(col, False), key=f"invert_{col}")
     with st.sidebar.expander("Reward Metrics Inversion"):
         for col in reward_cols:
             if col in st.session_state.df_clean.columns:
-                st.checkbox(
-                    f"Invert {col}",
-                    value=DEFAULT_REWARD_INVERTS.get(col, False),
-                    key=f"invert_{col}"
-                )
+                st.checkbox(f"Invert {col}", value=DEFAULT_REWARD_INVERTS.get(col, False), key=f"invert_{col}")
 
     # Metric type config
     metric_type_editor()
@@ -508,22 +516,22 @@ def main():
         risk_weights = {}
         for col in risk_cols:
             if col in st.session_state.df_clean.columns:
-                key = f'risk_{col}'
-                if key not in st.session_state:
-                    st.session_state[key] = 1.0
-                st.session_state[key] = st.slider(f"{col}", 0.0, 2.0, st.session_state[key], 0.1, key=f"risk_slider_{col}")
-                risk_weights[col] = st.session_state[key]
+                k = f'risk_{col}'
+                if k not in st.session_state:
+                    st.session_state[k] = 1.0
+                st.session_state[k] = st.slider(f"{col}", 0.0, 2.0, st.session_state[k], 0.1, key=f"risk_slider_{col}")
+                risk_weights[col] = st.session_state[k]
     with st.sidebar.expander("Reward Weights"):
         reward_weights = {}
         for col in reward_cols:
             if col in st.session_state.df_clean.columns:
-                key = f'reward_{col}'
-                if key not in st.session_state:
-                    st.session_state[key] = 1.0
-                st.session_state[key] = st.slider(f"{col}", 0.0, 2.0, st.session_state[key], 0.1, key=f"reward_slider_{col}")
-                reward_weights[col] = st.session_state[key]
+                k = f'reward_{col}'
+                if k not in st.session_state:
+                    st.session_state[k] = 1.0
+                st.session_state[k] = st.slider(f"{col}", 0.0, 2.0, st.session_state[k], 0.1, key=f"reward_slider_{col}")
+                reward_weights[col] = st.session_state[k]
 
-    # Scaling with current inversion
+    # Scaling with inversion
     for col in set(risk_cols + reward_cols):
         if col in st.session_state.df_clean.columns:
             invert = st.session_state.get(
@@ -532,14 +540,10 @@ def main():
             )
             if "Year" in st.session_state.df_clean.columns:
                 st.session_state.df_clean[f"Scaled_{col}"] = (
-                    st.session_state.df_clean
-                    .groupby("Year")[col]
-                    .transform(lambda s: safe_min_max_scale(s, invert))
+                    st.session_state.df_clean.groupby("Year")[col].transform(lambda s: safe_min_max_scale(s, invert))
                 )
             else:
-                st.session_state.df_clean[f"Scaled_{col}"] = safe_min_max_scale(
-                    st.session_state.df_clean[col], invert
-                )
+                st.session_state.df_clean[f"Scaled_{col}"] = safe_min_max_scale(st.session_state.df_clean[col], invert)
 
     # Scores
     current_df = calculate_scores(st.session_state.df_clean.copy(), risk_weights, reward_weights)
@@ -553,9 +557,9 @@ def main():
         filtered_df = current_df[~current_df["Manager Name"].isin(hidden)].copy()
 
         highlighted = st.multiselect("Highlight managers", filtered_df["Manager Name"].unique(), max_selections=4)
-        filtered_df["Highlight"] = np.where(
-            filtered_df["Manager Name"].isin(highlighted), filtered_df["Manager Name"], "Other"
-        )
+        filtered_df["Highlight"] = np.where(filtered_df["Manager Name"].isin(highlighted),
+                                            filtered_df["Manager Name"], "Other")
+
         palette = px.colors.qualitative.Bold
         color_map = {m: palette[i % len(palette)] for i, m in enumerate(highlighted)}
         color_map["Other"] = "#CCCCCC"
@@ -563,10 +567,7 @@ def main():
         scatter_args = dict(
             x="Risk_Score", y="Reward_Score", size="Bubble_Size",
             color="Highlight", hover_name="Manager Name",
-            hover_data={
-                "Risk_Score": ":.3f", "Reward_Score": ":.3f", "Average_Score": ":.3f",
-                "Deal Count": True, "AUM": ":,.0f"
-            },
+            hover_data={"Risk_Score":":.3f","Reward_Score":":.3f","Average_Score":":.3f","Deal Count":True,"AUM":":,.0f"},
             size_max=40, color_discrete_map=color_map
         )
         if "Year" in filtered_df.columns:
@@ -576,12 +577,12 @@ def main():
         fig.update_layout(
             xaxis_range=[-0.1, 1.1], yaxis_range=[-0.1, 1.1],
             height=600, plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#333333"), margin=dict(l=20, r=20, t=40, b=20)
+            font=dict(color="#333"), margin=dict(l=20, r=20, t=40, b=20)
         )
         st.plotly_chart(fig, use_container_width=True)
 
         with st.expander("Detailed Metrics Table", expanded=False):
-            table_df = (filtered_df.set_index(["Year", "Manager Name"])
+            table_df = (filtered_df.set_index(["Year","Manager Name"])
                         if "Year" in filtered_df.columns else filtered_df.set_index("Manager Name"))
             st.dataframe(table_df, use_container_width=True)
 
@@ -596,24 +597,23 @@ def main():
     if st.sidebar.button("💾 Generate Report"):
         with st.spinner("Generating report..."):
             try:
-                timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+                ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
                 os.makedirs("output", exist_ok=True)
                 risk_cols, reward_cols = get_current_metric_types()
 
-                export_cols = ["Manager Name", "Year", "Risk_Score", "Reward_Score", "Average_Score", "Bubble_Size"]
+                export_cols = ["Manager Name","Year","Risk_Score","Reward_Score","Average_Score","Bubble_Size"]
                 export_cols += [c for c in risk_cols if c in current_df.columns]
                 export_cols += [c for c in reward_cols if c in current_df.columns]
-                export_cols += [c for c in ["Deal Count", "AUM"] if c in current_df.columns]
+                export_cols += [c for c in ["Deal Count","AUM"] if c in current_df.columns]
 
                 export_df = current_df[[c for c in export_cols if c in current_df.columns]].copy()
 
-                csv_filename = f"manager_scores_{timestamp}.csv"
-                csv_path = f"output/{csv_filename}"
+                csv_path = f"output/manager_scores_{ts}.csv"
+                xlsx_path = f"output/manager_scores_{ts}.xlsx"
+
                 export_df.to_csv(csv_path, index=False, sep=";", decimal=",")
 
-                excel_filename = f"manager_scores_{timestamp}.xlsx"
-                excel_path = f"output/{excel_filename}"
-                with pd.ExcelWriter(excel_path) as writer:
+                with pd.ExcelWriter(xlsx_path) as writer:
                     export_df.to_excel(writer, sheet_name="Scores", index=False)
 
                     selections_df = pd.DataFrame({
@@ -658,11 +658,11 @@ def main():
                 c1, c2 = st.sidebar.columns(2)
                 with c1:
                     with open(csv_path, "rb") as f:
-                        st.download_button("📥 CSV", f, file_name=csv_filename, mime="text/csv")
+                        st.download_button("📥 CSV", f, file_name=os.path.basename(csv_path), mime="text/csv")
                 with c2:
-                    with open(excel_path, "rb") as f:
+                    with open(xlsx_path, "rb") as f:
                         st.download_button(
-                            "📊 Excel", f, file_name=excel_filename,
+                            "📊 Excel", f, file_name=os.path.basename(xlsx_path),
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
             except Exception as e:
