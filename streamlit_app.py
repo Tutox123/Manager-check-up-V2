@@ -160,23 +160,15 @@ def load_data():
             try:
                 df = pd.read_csv(uploaded_file, sep=";", decimal=",", thousands=' ')
 
-                # Extract date components from filename (MM-DD-YY)
-                date_match = re.search(r"(\d{2})-(\d{2})-(\d{2})", uploaded_file.name)
-                if date_match:
-                    m, d, y = date_match.groups()
-                    date_val = pd.to_datetime(f"{m}-{d}-{y}", format="%m-%d-%y")
-                    df["Year"] = date_val.year
-                    df["Month"] = date_val.month
-                    df["Date"] = date_val
-                else:
-                    df["Year"] = 0
-                    df["Month"] = 0
-                    df["Date"] = pd.NaT
+                # Extract year from filename
+                year_match = re.search(r"(19|20)\d{2}", uploaded_file.name)
+                year = int(year_match.group()) if year_match else 0
+                df["Year"] = year
 
                 # Data cleaning
                 df["Manager Name"] = df["Manager Name"].apply(clean_numeric, is_manager_name=True)
                 for col in df.columns:
-                    if col not in ["Manager Name", "Year", "Month", "Date"]:
+                    if col not in ["Manager Name", "Year"]:
                         df[col] = df[col].apply(clean_numeric)
 
                 all_frames.append(df)
@@ -242,9 +234,7 @@ def calculate_scores(df, risk_weights, reward_weights):
 
     # Merge back with original dataframe
     merge_cols = ["Manager Name"]
-    if "Date" in df.columns:
-        merge_cols.append("Date")
-    elif "Year" in df.columns:
+    if "Year" in df.columns:
         merge_cols.append("Year")
     df = df.merge(
         working_df[merge_cols + ["Risk_Score", "Reward_Score", "Average_Score", "Bubble_Size"]],
@@ -533,17 +523,9 @@ def main():
                 DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols
                 else DEFAULT_REWARD_INVERTS.get(col, False)
             )
-            if "Date" in st.session_state.df_clean.columns:
-                st.session_state.df_clean[f"Scaled_{col}"] = (
-                    st.session_state.df_clean.groupby("Date")[col].transform(
-                        lambda s: min_max_scale(s, invert)
-                    )
-                )
-            elif "Year" in st.session_state.df_clean.columns:
-                st.session_state.df_clean[f"Scaled_{col}"] = (
-                    st.session_state.df_clean.groupby("Year")[col].transform(
-                        lambda s: min_max_scale(s, invert)
-                    )
+            if "Year" in st.session_state.df_clean.columns:
+                st.session_state.df_clean[f"Scaled_{col}"] = st.session_state.df_clean.groupby("Year")[col].transform(
+                    lambda s: min_max_scale(s, invert)
                 )
             else:
                 st.session_state.df_clean[f"Scaled_{col}"] = min_max_scale(
@@ -599,9 +581,8 @@ def main():
             size_max=40,
             color_discrete_map=color_map
         )
-        if "Date" in filtered_df.columns:
-            filtered_df = filtered_df.sort_values("Date")
-            scatter_args["animation_frame"] = "Date"
+        if "Year" in filtered_df.columns:
+            scatter_args["animation_frame"] = "Year"
 
         fig = px.scatter(filtered_df, **scatter_args)
 
@@ -618,9 +599,7 @@ def main():
         st.plotly_chart(fig, use_container_width=True)
 
         with st.expander("Detailed Metrics Table", expanded=False):
-            if "Date" in filtered_df.columns:
-                table_df = filtered_df.set_index(["Date", "Manager Name"])
-            elif "Year" in filtered_df.columns:
+            if "Year" in filtered_df.columns:
                 table_df = filtered_df.set_index(["Year", "Manager Name"])
             else:
                 table_df = filtered_df.set_index("Manager Name")
@@ -648,7 +627,7 @@ def main():
 
                 # Prepare data
                 export_cols = [
-                    "Manager Name", "Date", "Year", "Month", "Risk_Score", "Reward_Score",
+                    "Manager Name", "Year", "Risk_Score", "Reward_Score",
                     "Average_Score", "Bubble_Size"
                 ] + risk_cols + reward_cols + ["Deal Count", "AUM"]
 
