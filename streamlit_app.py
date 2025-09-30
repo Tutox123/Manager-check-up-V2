@@ -11,7 +11,7 @@ import streamlit as st
 from locale import setlocale, LC_NUMERIC
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Locale (facultatif)
+# Locale (optional)
 # ───────────────────────────────────────────────────────────────────────────────
 try:
     setlocale(LC_NUMERIC, 'en_US.UTF-8')
@@ -34,16 +34,32 @@ st.markdown("""
   .stButton>button:hover { background:#1a2634; }
 </style>
 """, unsafe_allow_html=True)
-st.markdown("<h1 style='text-align:center;margin-bottom:1em;'>Manager Risk-Reward Analysis</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align:center;margin-bottom:1em;'>Manager Risk–Reward Analysis</h1>", unsafe_allow_html=True)
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Constantes / défauts
+# Constants / defaults
 # ───────────────────────────────────────────────────────────────────────────────
-TARGET_STOP_COL = "Price < 70%"  # on coupe après cette colonne (incluse)
-TARGET_HIGHLIGHTS = [
-    "LCM Asset Management LLC",
-    "GoldenTree Asset Management LP",
-    "Fortress Investment Group LLC",
+TARGET_STOP_COL = "Price < 70%"  # cut after this column (inclusive)
+
+# ✅ Default highlight aliases (case-insensitive, substring match)
+# Provide short labels and let the app map them to actual Manager Name values from the CSV.
+HIGHLIGHT_ALIASES = [
+    "AGL",
+    "Ares",
+    "Bain",
+    "Blackstone",
+    "Carlyle",
+    "CSAM",
+    "Eaton Vance",
+    "KKR",
+    "Neuberger",
+    "Octagon",
+    "Pimco",
+    "PGIM",
+    "Voya",
+    "Golden Tree",   # will match GoldenTree Asset Management LP
+    "LCM",           # will match LCM Asset Management LLC
+    "Fortress",      # will match Fortress Investment Group LLC
 ]
 
 ALL_METRICS = [
@@ -88,23 +104,20 @@ DEFAULT_REWARD_INVERTS = {c: False for c in DEFAULT_REWARD_COLS}
 BASE_METRICS = DEFAULT_RISK_COLS + DEFAULT_REWARD_COLS + ["Deal Count", "AUM"]
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Lecture CSV (point-virgule) + détection en-tête + dédup + TRIM jusqu’à TARGET_STOP_COL
+# CSV reading (semicolon) + header detection + dedup + TRIM to TARGET_STOP_COL
 # ───────────────────────────────────────────────────────────────────────────────
 def _detect_header_index_semicolon(text: str) -> int:
     lines = text.splitlines()
-    # priorité : ligne "Manager Name;" exacte
     for i, line in enumerate(lines):
         if re.search(r'^\s*Manager\s*Name\s*;', line, flags=re.IGNORECASE):
             return i
-    # fallback : ligne contenant "Manager Name" avec le plus de ';'
     cands = [(i, line.count(';')) for i, line in enumerate(lines) if "Manager Name" in line]
     if cands:
         return sorted(cands, key=lambda x: x[1], reverse=True)[0][0]
-    # dernier recours : première ligne qui contient la colonne cible
     for i, line in enumerate(lines):
         if TARGET_STOP_COL in line and line.count(';') >= 1:
             return i
-    raise ValueError("Impossible de trouver la ligne d’en-tête.")
+    raise ValueError("Could not find the CSV header row.")
 
 def _dedup_columns(cols):
     seen = {}
@@ -119,10 +132,9 @@ def _dedup_columns(cols):
     return uniq
 
 def _trim_until_target(df: pd.DataFrame, target: str) -> pd.DataFrame:
-    # garde toutes les colonnes de gauche jusqu’à (et y compris) 'target'
     targets = [c for c in df.columns if c == target or c.startswith(f"{target}.")]
     if not targets:
-        return df  # si la colonne n’existe pas, on ne coupe pas
+        return df
     tcol = targets[0]
     idx = list(df.columns).index(tcol)
     keep = list(df.columns)[: idx + 1]
@@ -136,23 +148,18 @@ def _read_semicolon_manager_csv(uploaded_file) -> pd.DataFrame:
         text = raw.decode("latin-1", errors="ignore")
 
     header_idx = _detect_header_index_semicolon(text)
-
     sio = io.StringIO(text)
     df = pd.read_csv(sio, sep=';', header=header_idx, decimal=',', engine="python")
 
-    # normaliser et dédupliquer les en-têtes
     df.columns = [re.sub(r"\s+", " ", c).strip() for c in df.columns]
     df.columns = _dedup_columns(df.columns)
 
-    # enlever colonnes totalement vides
     empty_cols = [c for c in df.columns if df[c].isna().all()]
     if empty_cols:
         df = df.drop(columns=empty_cols)
 
-    # TRIM jusqu’à la colonne cible (incluse)
     df = _trim_until_target(df, TARGET_STOP_COL)
 
-    # filtrer lignes sans Manager Name (si présent)
     mcols = [c for c in df.columns if c == "Manager Name" or c.startswith("Manager Name.")]
     if mcols:
         mcol = mcols[0]
@@ -163,7 +170,7 @@ def _read_semicolon_manager_csv(uploaded_file) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Nettoyage & scaling
+# Cleaning & scaling
 # ───────────────────────────────────────────────────────────────────────────────
 def clean_european_number(value):
     if pd.isna(value) or value == '':
@@ -239,7 +246,7 @@ def calculate_scores(df: pd.DataFrame, risk_weights: dict, reward_weights: dict)
     excluded = st.session_state.get("excluded_managers", set())
     working_df = df if "Manager Name" not in df.columns else df[~df["Manager Name"].isin(excluded)].copy()
 
-    # risque
+    # risk
     risk_num, risk_den = 0, 0.0
     for col in risk_cols:
         sc = f"Scaled_{col}"
@@ -249,7 +256,7 @@ def calculate_scores(df: pd.DataFrame, risk_weights: dict, reward_weights: dict)
             risk_den += w
     working_df["Risk_Score"] = (risk_num / risk_den) if risk_den > 0 else 0.5
 
-    # rendement
+    # reward
     rew_num, rew_den = 0, 0.0
     for col in reward_cols:
         sc = f"Scaled_{col}"
@@ -277,58 +284,72 @@ def calculate_scores(df: pd.DataFrame, risk_weights: dict, reward_weights: dict)
     return df
 
 # ───────────────────────────────────────────────────────────────────────────────
-# UI : éditeur types de métriques / éditeur valeurs / sélection managers
+# Utility: map aliases to available manager names (case-insensitive substring)
+# ───────────────────────────────────────────────────────────────────────────────
+def resolve_highlight_defaults(manager_options, aliases=HIGHLIGHT_ALIASES):
+    opts_norm = {m: m.casefold() for m in manager_options}
+    preselected = []
+    for alias in aliases:
+        a = alias.casefold()
+        # find the first option that contains this alias
+        match = next((orig for orig, low in opts_norm.items() if a in low), None)
+        if match and match not in preselected:
+            preselected.append(match)
+    return preselected
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Metric type editor / value editor / manager selection
 # ───────────────────────────────────────────────────────────────────────────────
 def metric_type_editor():
-    st.sidebar.header("🔀 Type de métriques")
+    st.sidebar.header("🔀 Metric Types")
     risk_cols, reward_cols = get_current_metric_types()
     present_cols = set(st.session_state.df_clean.columns)
     candidates = [m for m in ALL_METRICS if m in present_cols and m not in risk_cols and m not in reward_cols]
 
-    with st.sidebar.expander("Modifier les types"):
-        st.write("**Métriques de risque :**")
+    with st.sidebar.expander("Edit Types"):
+        st.write("**Risk metrics:**")
         for metric in list(risk_cols):
             c = st.columns([4,1])
             c[0].write(metric)
-            if c[1].button("➡️ Rendement", key=f"risk_to_reward_{metric}"):
+            if c[1].button("➡️ To Reward", key=f"risk_to_reward_{metric}"):
                 risk_cols.remove(metric); reward_cols.append(metric)
                 st.session_state.custom_risk_cols = risk_cols; st.session_state.custom_reward_cols = reward_cols
                 st.rerun()
 
-        st.write("**Métriques de rendement :**")
+        st.write("**Reward metrics:**")
         for metric in list(reward_cols):
             c = st.columns([4,1])
             c[0].write(metric)
-            if c[1].button("⬅️ Risque", key=f"reward_to_risk_{metric}"):
+            if c[1].button("⬅️ To Risk", key=f"reward_to_risk_{metric}"):
                 reward_cols.remove(metric); risk_cols.append(metric)
                 st.session_state.custom_risk_cols = risk_cols; st.session_state.custom_reward_cols = reward_cols
                 st.rerun()
 
         if candidates:
-            st.write("**Métriques disponibles :**")
+            st.write("**Available metrics:**")
             for metric in candidates:
                 c = st.columns([3,1,1]); c[0].write(metric)
-                if c[1].button("➕ Risque", key=f"add_risk_{metric}"):
+                if c[1].button("➕ Risk", key=f"add_risk_{metric}"):
                     risk_cols.append(metric); st.session_state.custom_risk_cols = risk_cols; st.rerun()
-                if c[2].button("➕ Rendement", key=f"add_reward_{metric}"):
+                if c[2].button("➕ Reward", key=f"add_reward_{metric}"):
                     reward_cols.append(metric); st.session_state.custom_reward_cols = reward_cols; st.rerun()
 
 def metric_editor(df):
-    st.header("✏️ Édition des métriques (par manager)")
+    st.header("✏️ Edit Metrics (per Manager)")
     if 'df_clean' not in st.session_state:
-        st.warning("Veuillez d’abord charger un fichier."); return
+        st.warning("Please load a file first."); return
     if 'editable_df' not in st.session_state:
         st.session_state.editable_df = st.session_state.df_clean.copy()
     if "Manager Name" not in st.session_state.editable_df.columns:
-        st.info("Colonne 'Manager Name' absente. Édition désactivée."); return
+        st.info("'Manager Name' column missing. Editing disabled."); return
 
     managers = st.session_state.editable_df["Manager Name"].dropna().unique()
     if len(managers) == 0:
-        st.warning("Aucun manager trouvé."); return
+        st.warning("No manager found."); return
 
-    selected_manager = st.selectbox("Sélectionner un manager", managers, key="manager_select")
+    selected_manager = st.selectbox("Select a manager", managers, key="manager_select")
     manager_idx = st.session_state.editable_df[st.session_state.editable_df["Manager Name"] == selected_manager].index[0]
-    st.markdown(f"### Édition : **{selected_manager}**")
+    st.markdown(f"### Editing: **{selected_manager}**")
 
     cols = st.columns(3); current_col = 0; modifications = {}
     for col in [c for c in BASE_METRICS if c in st.session_state.editable_df.columns]:
@@ -343,16 +364,21 @@ def metric_editor(df):
                 modifications[col] = new_val
         current_col = (current_col + 1) % 3
 
-    if st.button("💾 Enregistrer", key=f"save_{selected_manager}"):
+    if st.button("💾 Save", key=f"save_{selected_manager}"):
         try:
             for c, v in modifications.items():
                 st.session_state.editable_df.at[manager_idx, c] = v
             risk_cols, reward_cols = get_current_metric_types()
             affected = set(modifications.keys()) & set(risk_cols + reward_cols)
             for col in affected:
-                invert = st.session_state.get(f"invert_{col}", DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols else DEFAULT_REWARD_INVERTS.get(col, False))
+                invert = st.session_state.get(
+                    f"invert_{col}",
+                    DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols else DEFAULT_REWARD_INVERTS.get(col, False)
+                )
                 if "Year" in st.session_state.editable_df.columns:
-                    st.session_state.editable_df[f"Scaled_{col}"] = st.session_state.editable_df.groupby("Year")[col].transform(lambda s: safe_min_max_scale(s, invert))
+                    st.session_state.editable_df[f"Scaled_{col}"] = st.session_state.editable_df.groupby("Year")[col].transform(
+                        lambda s: safe_min_max_scale(s, invert)
+                    )
                 else:
                     st.session_state.editable_df[f"Scaled_{col}"] = safe_min_max_scale(st.session_state.editable_df[col], invert)
 
@@ -363,47 +389,47 @@ def metric_editor(df):
             st.session_state.df_clean = updated.copy()
             st.session_state.editable_df = updated.copy()
             st.session_state.last_update = time.time()
-            st.success("Modifications enregistrées !")
+            st.success("Saved!")
         except Exception as e:
-            st.error(f"Erreur : {str(e)}")
+            st.error(f"Error: {str(e)}")
 
 def manager_selection_interface():
-    st.header("👥 Sélection des managers")
+    st.header("👥 Manager Selection")
     if 'df_clean' not in st.session_state:
-        st.warning("Veuillez d’abord charger des données."); return
+        st.warning("Please load data first."); return
     if "Manager Name" not in st.session_state.df_clean.columns:
-        st.info("Colonne 'Manager Name' absente. Sélection désactivée."); return
+        st.info("'Manager Name' column missing. Selection disabled."); return
 
     all_managers = st.session_state.df_clean["Manager Name"].dropna().unique()
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("Masquer dans la visualisation")
+        st.subheader("Hide in visualization")
         st.markdown("<div class='manager-list'>", unsafe_allow_html=True)
         hidden = st.session_state.get("hidden_managers", set()); new_hidden = set()
         for m in all_managers:
-            if st.checkbox(f"Masquer {m}", value=(m in hidden), key=f"hide_{m}"):
+            if st.checkbox(f"Hide {m}", value=(m in hidden), key=f"hide_{m}"):
                 new_hidden.add(m)
         st.session_state.hidden_managers = new_hidden
         st.markdown("</div>", unsafe_allow_html=True)
     with col2:
-        st.subheader("Exclure des calculs")
+        st.subheader("Exclude from calculations")
         st.markdown("<div class='manager-list'>", unsafe_allow_html=True)
         excluded = st.session_state.get("excluded_managers", set()); new_excluded = set()
         for m in all_managers:
-            if st.checkbox(f"Exclure {m}", value=(m in excluded), key=f"exclude_{m}"):
+            if st.checkbox(f"Exclude {m}", value=(m in excluded), key=f"exclude_{m}"):
                 new_excluded.add(m)
         st.session_state.excluded_managers = new_excluded
         st.markdown("</div>", unsafe_allow_html=True)
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Chargement des données (CSV ; seulement) — coupe après TARGET_STOP_COL
+# Data loading (CSV only) — trim after TARGET_STOP_COL
 # ───────────────────────────────────────────────────────────────────────────────
 def load_data():
     st.sidebar.header("📤 Import CSV")
     uploaded_files = st.sidebar.file_uploader(
-        f"Importer des fichiers CSV (séparateur ';') — les colonnes à droite de « {TARGET_STOP_COL} » seront ignorées",
+        f"Upload CSV files (semicolon ';' separator) — columns to the right of “{TARGET_STOP_COL}” are ignored",
         type=["csv"], accept_multiple_files=True,
-        help=f"Ligne d’en-tête détectée automatiquement. Seules les colonnes jusqu’à « {TARGET_STOP_COL} » (incluse) sont gardées."
+        help=f"Header row auto-detected. Only columns up to “{TARGET_STOP_COL}” (inclusive) are kept."
     )
     if not uploaded_files:
         return None
@@ -413,7 +439,7 @@ def load_data():
         try:
             df = _read_semicolon_manager_csv(uploaded_file)
 
-            # année depuis le nom de fichier
+            # Try to infer year from filename
             year_match = re.search(r"(19|20)\d{2}", uploaded_file.name)
             year = int(year_match.group()) if year_match else 0
             if "Year" not in df.columns:
@@ -421,7 +447,7 @@ def load_data():
             else:
                 df["Year"] = pd.to_numeric(df["Year"], errors='coerce').fillna(year).astype(int)
 
-            # nettoyage
+            # cleaning
             if "Manager Name" in df.columns:
                 df["Manager Name"] = df["Manager Name"].apply(clean_numeric, is_manager_name=True)
             for c in [c for c in df.columns if c not in ["Manager Name", "Year"]]:
@@ -429,7 +455,7 @@ def load_data():
 
             frames.append(df)
         except Exception as e:
-            st.sidebar.error(f"Erreur de chargement pour {uploaded_file.name} : {str(e)}")
+            st.sidebar.error(f"Load error for {uploaded_file.name}: {str(e)}")
             return None
 
     if not frames:
@@ -441,7 +467,7 @@ def load_data():
     st.session_state.file_uploaded = True
     st.session_state.hidden_managers = set()
     st.session_state.excluded_managers = set()
-    st.sidebar.success(f"Fichiers chargés ! (Colonnes après « {TARGET_STOP_COL} » ignorées)")
+    st.sidebar.success(f"Files loaded! (Columns after “{TARGET_STOP_COL}” ignored)")
     return df_all
 
 # ───────────────────────────────────────────────────────────────────────────────
@@ -456,35 +482,35 @@ def main():
     if not st.session_state.file_uploaded:
         df = load_data()
         if df is None:
-            st.info(f"Importez au moins un CSV « ; ». Les colonnes après « {TARGET_STOP_COL} » seront ignorées.")
+            st.info(f"Upload at least one ';' CSV. Columns after “{TARGET_STOP_COL}” will be ignored.")
             return
 
     if 'df_clean' not in st.session_state:
-        st.warning("Veuillez importer un CSV valide."); return
+        st.warning("Please upload a valid CSV."); return
 
     # Reset
-    if st.session_state.file_uploaded and st.sidebar.button("🔄 Réinitialiser"):
+    if st.session_state.file_uploaded and st.sidebar.button("🔄 Reset"):
         st.session_state.clear(); st.rerun()
 
     # Inversions
-    st.sidebar.header("🔄 Inversion des métriques")
+    st.sidebar.header("🔄 Metric Inversion")
     risk_cols, reward_cols = get_current_metric_types()
-    with st.sidebar.expander("Risque"):
+    with st.sidebar.expander("Risk"):
         for col in risk_cols:
             if col in st.session_state.df_clean.columns:
-                st.checkbox(f"Inverser {col}", value=DEFAULT_RISK_INVERTS.get(col, False), key=f"invert_{col}")
-    with st.sidebar.expander("Rendement"):
+                st.checkbox(f"Invert {col}", value=DEFAULT_RISK_INVERTS.get(col, False), key=f"invert_{col}")
+    with st.sidebar.expander("Reward"):
         for col in reward_cols:
             if col in st.session_state.df_clean.columns:
-                st.checkbox(f"Inverser {col}", value=DEFAULT_REWARD_INVERTS.get(col, False), key=f"invert_{col}")
+                st.checkbox(f"Invert {col}", value=DEFAULT_REWARD_INVERTS.get(col, False), key=f"invert_{col}")
 
-    # Types de métriques
+    # Types
     metric_type_editor()
 
-    # Poids
-    st.sidebar.header("⚖️ Poids des métriques")
+    # Weights
+    st.sidebar.header("⚖️ Metric Weights")
     risk_cols, reward_cols = get_current_metric_types()
-    with st.sidebar.expander("Poids (Risque)"):
+    with st.sidebar.expander("Weights (Risk)"):
         risk_weights = {}
         for col in risk_cols:
             if col in st.session_state.df_clean.columns:
@@ -492,7 +518,7 @@ def main():
                 if k not in st.session_state: st.session_state[k] = 1.0
                 st.session_state[k] = st.slider(f"{col}", 0.0, 2.0, st.session_state[k], 0.1, key=f"risk_slider_{col}")
                 risk_weights[col] = st.session_state[k]
-    with st.sidebar.expander("Poids (Rendement)"):
+    with st.sidebar.expander("Weights (Reward)"):
         reward_weights = {}
         for col in reward_cols:
             if col in st.session_state.df_clean.columns:
@@ -504,40 +530,47 @@ def main():
     # Scaling
     for col in set(risk_cols + reward_cols):
         if col in st.session_state.df_clean.columns:
-            invert = st.session_state.get(f"invert_{col}", DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols else DEFAULT_REWARD_INVERTS.get(col, False))
+            invert = st.session_state.get(
+                f"invert_{col}",
+                DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols else DEFAULT_REWARD_INVERTS.get(col, False)
+            )
             if "Year" in st.session_state.df_clean.columns:
-                st.session_state.df_clean[f"Scaled_{col}"] = st.session_state.df_clean.groupby("Year")[col].transform(lambda s: safe_min_max_scale(s, invert))
+                st.session_state.df_clean[f"Scaled_{col}"] = st.session_state.df_clean.groupby("Year")[col].transform(
+                    lambda s: safe_min_max_scale(s, invert)
+                )
             else:
                 st.session_state.df_clean[f"Scaled_{col}"] = safe_min_max_scale(st.session_state.df_clean[col], invert)
 
     # Scores
     current_df = calculate_scores(st.session_state.df_clean.copy(), risk_weights, reward_weights)
 
-    # Onglets
-    tab1, tab2, tab3 = st.tabs(["📊 Visualisation", "👥 Sélection managers", "✏️ Éditer métriques"])
+    # Tabs
+    tab1, tab2, tab3 = st.tabs(["📊 Visualization", "👥 Manager Selection", "✏️ Edit Metrics"])
 
     with tab1:
-        st.header("Matrice Risque-Rendement")
+        st.header("Risk–Reward Matrix")
 
         filtered_df = current_df.copy()
         if "Manager Name" in filtered_df.columns:
             hidden = st.session_state.get("hidden_managers", set())
             filtered_df = filtered_df[~filtered_df["Manager Name"].isin(hidden)]
 
-        # --- Highlight par défaut : LCM, GoldenTree, Fortress ---
+        # --- Default highlights from aliases (your full list) ---
         manager_options = (
             filtered_df["Manager Name"].dropna().unique().tolist()
             if "Manager Name" in filtered_df.columns else []
         )
-        preselect = [m for m in TARGET_HIGHLIGHTS if m in manager_options]
+        default_preselect = resolve_highlight_defaults(manager_options, HIGHLIGHT_ALIASES)
+
         if "highlight_managers" not in st.session_state:
-            st.session_state["highlight_managers"] = preselect
+            st.session_state["highlight_managers"] = default_preselect
 
         highlighted = st.multiselect(
-            "Managers à mettre en avant",
+            "Managers to highlight",
             manager_options,
+            default=st.session_state.get("highlight_managers", default_preselect),
             key="highlight_managers",
-            max_selections=8
+            max_selections=20
         )
 
         if "Manager Name" in filtered_df.columns:
@@ -574,7 +607,7 @@ def main():
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        with st.expander("Tableau détaillé", expanded=False):
+        with st.expander("Detailed Table", expanded=False):
             if "Year" in filtered_df.columns and "Manager Name" in filtered_df.columns:
                 table_df = filtered_df.set_index(["Year","Manager Name"])
             elif "Manager Name" in filtered_df.columns:
@@ -591,8 +624,8 @@ def main():
 
     # Export
     st.sidebar.header("📤 Export")
-    if st.sidebar.button("💾 Générer le rapport"):
-        with st.spinner("Génération du rapport…"):
+    if st.sidebar.button("💾 Generate report"):
+        with st.spinner("Generating report…"):
             try:
                 ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
                 os.makedirs("output", exist_ok=True)
@@ -612,7 +645,7 @@ def main():
                 with pd.ExcelWriter(xlsx_path) as writer:
                     export_df.to_excel(writer, sheet_name="Scores", index=False)
 
-                st.sidebar.success("Rapport généré !")
+                st.sidebar.success("Report generated!")
                 c1, c2 = st.sidebar.columns(2)
                 with c1:
                     with open(csv_path, "rb") as f:
@@ -622,7 +655,7 @@ def main():
                         st.download_button("📊 Excel", f, file_name=os.path.basename(xlsx_path),
                                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             except Exception as e:
-                st.sidebar.error(f"Erreur export : {str(e)}")
+                st.sidebar.error(f"Export error: {str(e)}")
 
 if __name__ == "__main__":
     main()
