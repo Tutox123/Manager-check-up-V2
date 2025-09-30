@@ -7,8 +7,10 @@ import time
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.io as pio
 import streamlit as st
 from locale import setlocale, LC_NUMERIC
+from datetime import datetime
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Locale (optional)
@@ -41,25 +43,10 @@ st.markdown("<h1 style='text-align:center;margin-bottom:1em;'>Manager Risk–Rew
 # ───────────────────────────────────────────────────────────────────────────────
 TARGET_STOP_COL = "Price < 70%"  # cut after this column (inclusive)
 
-# ✅ Default highlight aliases (case-insensitive, substring match)
-# Provide short labels and let the app map them to actual Manager Name values from the CSV.
+# Highlight aliases (case-insensitive substring matching)
 HIGHLIGHT_ALIASES = [
-    "AGL",
-    "Ares",
-    "Bain",
-    "Blackstone",
-    "Carlyle",
-    "CSAM",
-    "Eaton Vance",
-    "KKR",
-    "Neuberger",
-    "Octagon",
-    "Pimco",
-    "PGIM",
-    "Voya",
-    "Golden Tree",   # will match GoldenTree Asset Management LP
-    "LCM",           # will match LCM Asset Management LLC
-    "Fortress",      # will match Fortress Investment Group LLC
+    "AGL","Ares","Bain","Blackstone","Carlyle","CSAM","Eaton Vance","KKR",
+    "Neuberger","Octagon","Pimco","PGIM","Voya","Golden Tree","LCM","Fortress"
 ]
 
 ALL_METRICS = [
@@ -103,6 +90,15 @@ DEFAULT_REWARD_INVERTS = {c: False for c in DEFAULT_REWARD_COLS}
 
 BASE_METRICS = DEFAULT_RISK_COLS + DEFAULT_REWARD_COLS + ["Deal Count", "AUM"]
 
+# Color palettes (more distinct options; first two are color-blind friendly)
+PALETTES = {
+    "Vibrant (Alphabet)": px.colors.qualitative.Alphabet,       # 26 colors
+    "Color-blind Safe": px.colors.qualitative.Safe,             # 11 colors
+    "Bold": px.colors.qualitative.Bold,                         # 10 colors
+    "Dark24": px.colors.qualitative.Dark24,                     # 24 colors
+    "Classic (Plotly)": px.colors.qualitative.Plotly            # 10 colors
+}
+
 # ───────────────────────────────────────────────────────────────────────────────
 # CSV reading (semicolon) + header detection + dedup + TRIM to TARGET_STOP_COL
 # ───────────────────────────────────────────────────────────────────────────────
@@ -120,23 +116,19 @@ def _detect_header_index_semicolon(text: str) -> int:
     raise ValueError("Could not find the CSV header row.")
 
 def _dedup_columns(cols):
-    seen = {}
-    uniq = []
+    seen, uniq = {}, []
     for c in cols:
         if c not in seen:
-            seen[c] = 0
-            uniq.append(c)
+            seen[c] = 0; uniq.append(c)
         else:
-            seen[c] += 1
-            uniq.append(f"{c}.{seen[c]}")
+            seen[c] += 1; uniq.append(f"{c}.{seen[c]}")
     return uniq
 
 def _trim_until_target(df: pd.DataFrame, target: str) -> pd.DataFrame:
     targets = [c for c in df.columns if c == target or c.startswith(f"{target}.")]
     if not targets:
         return df
-    tcol = targets[0]
-    idx = list(df.columns).index(tcol)
+    idx = list(df.columns).index(targets[0])
     keep = list(df.columns)[: idx + 1]
     return df.loc[:, keep]
 
@@ -148,8 +140,7 @@ def _read_semicolon_manager_csv(uploaded_file) -> pd.DataFrame:
         text = raw.decode("latin-1", errors="ignore")
 
     header_idx = _detect_header_index_semicolon(text)
-    sio = io.StringIO(text)
-    df = pd.read_csv(sio, sep=';', header=header_idx, decimal=',', engine="python")
+    df = pd.read_csv(io.StringIO(text), sep=';', header=header_idx, decimal=',', engine="python")
 
     df.columns = [re.sub(r"\s+", " ", c).strip() for c in df.columns]
     df.columns = _dedup_columns(df.columns)
@@ -172,16 +163,6 @@ def _read_semicolon_manager_csv(uploaded_file) -> pd.DataFrame:
 # ───────────────────────────────────────────────────────────────────────────────
 # Cleaning & scaling
 # ───────────────────────────────────────────────────────────────────────────────
-def clean_european_number(value):
-    if pd.isna(value) or value == '':
-        return 0.0
-    if isinstance(value, str):
-        value = value.strip().replace(' ', '').replace('.', '').replace(',', '.')
-    try:
-        return float(value)
-    except Exception:
-        return 0.0
-
 def clean_numeric(value, is_manager_name=False):
     import numpy as np
     if isinstance(value, (pd.Series, list, tuple, np.ndarray)):
@@ -284,21 +265,72 @@ def calculate_scores(df: pd.DataFrame, risk_weights: dict, reward_weights: dict)
     return df
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Utility: map aliases to available manager names (case-insensitive substring)
+# Utilities: highlights, palette, styling, export
 # ───────────────────────────────────────────────────────────────────────────────
 def resolve_highlight_defaults(manager_options, aliases=HIGHLIGHT_ALIASES):
     opts_norm = {m: m.casefold() for m in manager_options}
     preselected = []
     for alias in aliases:
         a = alias.casefold()
-        # find the first option that contains this alias
         match = next((orig for orig, low in opts_norm.items() if a in low), None)
         if match and match not in preselected:
             preselected.append(match)
     return preselected
 
+def build_color_map(highlighted, palette_name):
+    palette = PALETTES.get(palette_name, px.colors.qualitative.Alphabet)
+    color_map = {m: palette[i % len(palette)] for i, m in enumerate(highlighted)}
+    color_map["Other"] = "#D3D3D3"
+    return color_map
+
+def style_highlight_traces(fig):
+    """Improve separability: strong markers for highlights, faint for 'Other' (handles animation frames too)."""
+    def _style_traces(traces):
+        for tr in traces:
+            name = getattr(tr, "name", "")
+            if name == "Other":
+                tr.marker.update(opacity=0.25, line=dict(width=0))
+            else:
+                tr.marker.update(opacity=0.95, line=dict(width=1.5, color="#000"))
+    _style_traces(fig.data)
+    if fig.frames:
+        for fr in fig.frames:
+            _style_traces(fr.data)
+
+def fig_download_buttons(fig, default_name="risk_reward_plot"):
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base = st.text_input("File name (no extension)", value=f"{default_name}_{ts}")
+    colA, colB, colC = st.columns(3)
+
+    # HTML (always works; self-contained)
+    with colA:
+        html_str = pio.to_html(fig, include_plotlyjs="cdn", full_html=False)
+        st.download_button("⬇️ HTML", data=html_str, file_name=f"{base}.html", mime="text/html")
+
+    # PNG / SVG via Kaleido (if available)
+    def _try_image(fmt: str):
+        try:
+            img_bytes = pio.to_image(fig, format=fmt, scale=2)
+            return img_bytes
+        except Exception:
+            return None
+
+    with colB:
+        png_bytes = _try_image("png")
+        if png_bytes:
+            st.download_button("⬇️ PNG", data=png_bytes, file_name=f"{base}.png", mime="image/png")
+        else:
+            st.caption("PNG requires Kaleido. Install: `pip install -U kaleido`")
+
+    with colC:
+        svg_bytes = _try_image("svg")
+        if svg_bytes:
+            st.download_button("⬇️ SVG", data=svg_bytes, file_name=f"{base}.svg", mime="image/svg+xml")
+        else:
+            st.caption("SVG requires Kaleido. Install: `pip install -U kaleido`")
+
 # ───────────────────────────────────────────────────────────────────────────────
-# Metric type editor / value editor / manager selection
+# UI blocks
 # ───────────────────────────────────────────────────────────────────────────────
 def metric_type_editor():
     st.sidebar.header("🔀 Metric Types")
@@ -354,14 +386,14 @@ def metric_editor(df):
     cols = st.columns(3); current_col = 0; modifications = {}
     for col in [c for c in BASE_METRICS if c in st.session_state.editable_df.columns]:
         with cols[current_col]:
-            raw = st.session_state.editable_df.at[manager_idx, col]
+            raw = st.session_state.editable_df.at[manager_idx, c]
             num = pd.to_numeric(raw, errors='coerce'); current_val = 0.0 if pd.isna(num) else float(num)
-            if col in PERCENTAGE_METRICS:
-                new_val = st.number_input(f"{col} (%)", value=float(current_val * 100.0), min_value=0.0, max_value=100.0, step=0.1, key=f"edit_{col}_{selected_manager}")
-                modifications[col] = new_val / 100.0
+            if c in PERCENTAGE_METRICS:
+                new_val = st.number_input(f"{c} (%)", value=float(current_val * 100.0), min_value=0.0, max_value=100.0, step=0.1, key=f"edit_{c}_{selected_manager}")
+                modifications[c] = new_val / 100.0
             else:
-                new_val = st.number_input(col, value=float(current_val), step=0.1, key=f"edit_{col}_{selected_manager}")
-                modifications[col] = new_val
+                new_val = st.number_input(c, value=float(current_val), step=0.1, key=f"edit_{c}_{selected_manager}")
+                modifications[c] = new_val
         current_col = (current_col + 1) % 3
 
     if st.button("💾 Save", key=f"save_{selected_manager}"):
@@ -370,17 +402,17 @@ def metric_editor(df):
                 st.session_state.editable_df.at[manager_idx, c] = v
             risk_cols, reward_cols = get_current_metric_types()
             affected = set(modifications.keys()) & set(risk_cols + reward_cols)
-            for col in affected:
+            for c in affected:
                 invert = st.session_state.get(
-                    f"invert_{col}",
-                    DEFAULT_RISK_INVERTS.get(col, False) if col in risk_cols else DEFAULT_REWARD_INVERTS.get(col, False)
+                    f"invert_{c}",
+                    DEFAULT_RISK_INVERTS.get(c, False) if c in risk_cols else DEFAULT_REWARD_INVERTS.get(c, False)
                 )
                 if "Year" in st.session_state.editable_df.columns:
-                    st.session_state.editable_df[f"Scaled_{col}"] = st.session_state.editable_df.groupby("Year")[col].transform(
+                    st.session_state.editable_df[f"Scaled_{c}"] = st.session_state.editable_df.groupby("Year")[c].transform(
                         lambda s: safe_min_max_scale(s, invert)
                     )
                 else:
-                    st.session_state.editable_df[f"Scaled_{col}"] = safe_min_max_scale(st.session_state.editable_df[col], invert)
+                    st.session_state.editable_df[f"Scaled_{c}"] = safe_min_max_scale(st.session_state.editable_df[c], invert)
 
             risk_weights = {c: st.session_state.get(f'risk_{c}', 1.0) for c in risk_cols}
             reward_weights = {c: st.session_state.get(f'reward_{c}', 1.0) for c in reward_cols}
@@ -439,7 +471,7 @@ def load_data():
         try:
             df = _read_semicolon_manager_csv(uploaded_file)
 
-            # Try to infer year from filename
+            # Infer year from filename when possible
             year_match = re.search(r"(19|20)\d{2}", uploaded_file.name)
             year = int(year_match.group()) if year_match else 0
             if "Year" not in df.columns:
@@ -447,7 +479,7 @@ def load_data():
             else:
                 df["Year"] = pd.to_numeric(df["Year"], errors='coerce').fillna(year).astype(int)
 
-            # cleaning
+            # Clean numerics
             if "Manager Name" in df.columns:
                 df["Manager Name"] = df["Manager Name"].apply(clean_numeric, is_manager_name=True)
             for c in [c for c in df.columns if c not in ["Manager Name", "Year"]]:
@@ -492,7 +524,7 @@ def main():
     if st.session_state.file_uploaded and st.sidebar.button("🔄 Reset"):
         st.session_state.clear(); st.rerun()
 
-    # Inversions
+    # Metric inversion
     st.sidebar.header("🔄 Metric Inversion")
     risk_cols, reward_cols = get_current_metric_types()
     with st.sidebar.expander("Risk"):
@@ -504,12 +536,11 @@ def main():
             if col in st.session_state.df_clean.columns:
                 st.checkbox(f"Invert {col}", value=DEFAULT_REWARD_INVERTS.get(col, False), key=f"invert_{col}")
 
-    # Types
+    # Type editor
     metric_type_editor()
 
     # Weights
     st.sidebar.header("⚖️ Metric Weights")
-    risk_cols, reward_cols = get_current_metric_types()
     with st.sidebar.expander("Weights (Risk)"):
         risk_weights = {}
         for col in risk_cols:
@@ -550,12 +581,20 @@ def main():
     with tab1:
         st.header("Risk–Reward Matrix")
 
+        # Display & export controls
+        col_disp1, col_disp2, col_disp3 = st.columns([1.2,1,1])
+        with col_disp1:
+            palette_name = st.selectbox("🎨 Color scheme", list(PALETTES.keys()), index=0)
+        with col_disp2:
+            show_legend = st.checkbox("Show legend", value=True)
+        with col_disp3:
+            freeze_axes = st.checkbox("Lock axes (0–1)", value=True)
+
         filtered_df = current_df.copy()
         if "Manager Name" in filtered_df.columns:
             hidden = st.session_state.get("hidden_managers", set())
             filtered_df = filtered_df[~filtered_df["Manager Name"].isin(hidden)]
 
-        # --- Default highlights from aliases (your full list) ---
         manager_options = (
             filtered_df["Manager Name"].dropna().unique().tolist()
             if "Manager Name" in filtered_df.columns else []
@@ -570,7 +609,7 @@ def main():
             manager_options,
             default=st.session_state.get("highlight_managers", default_preselect),
             key="highlight_managers",
-            max_selections=20
+            max_selections=30
         )
 
         if "Manager Name" in filtered_df.columns:
@@ -582,9 +621,7 @@ def main():
         else:
             filtered_df["Highlight"] = "Other"
 
-        palette = px.colors.qualitative.Bold
-        color_map = {m: palette[i % len(palette)] for i, m in enumerate(highlighted)}
-        color_map["Other"] = "#CCCCCC"
+        color_map = build_color_map(highlighted, palette_name)
 
         scatter_args = dict(
             x="Risk_Score", y="Reward_Score", size="Bubble_Size",
@@ -594,18 +631,44 @@ def main():
                 "Deal Count": True if "Deal Count" in filtered_df.columns else False,
                 "AUM": ":,.0f" if "AUM" in filtered_df.columns else False
             },
-            size_max=40, color_discrete_map=color_map
+            size_max=40, color_discrete_map=color_map,
+            category_orders={"Highlight": highlighted + ["Other"]}  # legend order
         )
         if "Year" in filtered_df.columns:
             scatter_args["animation_frame"] = "Year"
 
         fig = px.scatter(filtered_df, **scatter_args)
+
+        # Layout and legend
         fig.update_layout(
-            xaxis_range=[-0.1, 1.1], yaxis_range=[-0.1, 1.1], height=600,
+            legend=dict(
+                title="Managers",
+                orientation="v", x=1.02, y=1, yanchor="top", xanchor="left",
+                bgcolor="rgba(255,255,255,0.8)"
+            ),
+            showlegend=show_legend,
+            height=620,
             plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#333"), margin=dict(l=20,r=20,t=40,b=20)
+            font=dict(color="#333"),
+            margin=dict(l=20,r=200 if show_legend else 20,t=40,b=20)
         )
-        st.plotly_chart(fig, use_container_width=True)
+        if freeze_axes:
+            fig.update_xaxes(range=[-0.1, 1.1])
+            fig.update_yaxes(range=[-0.1, 1.1])
+
+        # Stronger visual separation for highlights
+        style_highlight_traces(fig)
+
+        # Plotly toolbar config (easy image save)
+        plot_config = {
+            "displaylogo": False,
+            "modeBarButtonsToAdd": ["toImage"],
+            "toImageButtonOptions": {"format": "png", "filename": "risk_reward", "scale": 2}
+        }
+        st.plotly_chart(fig, use_container_width=True, config=plot_config)
+
+        with st.expander("⬇️ Save this chart", expanded=True):
+            fig_download_buttons(fig, default_name="risk_reward")
 
         with st.expander("Detailed Table", expanded=False):
             if "Year" in filtered_df.columns and "Manager Name" in filtered_df.columns:
@@ -622,8 +685,8 @@ def main():
     with tab3:
         metric_editor(current_df)
 
-    # Export
-    st.sidebar.header("📤 Export")
+    # Exports (scores)
+    st.sidebar.header("📤 Export Scores")
     if st.sidebar.button("💾 Generate report"):
         with st.spinner("Generating report…"):
             try:
@@ -659,3 +722,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
